@@ -71,10 +71,16 @@ public partial class RunningAppsPage
 
         // Said plainly, because the count is the honest answer to "why didn't Quiesce close my browser":
         // it was never a target. A group Quiesce has not been told about is not refused, it is invisible.
+        //
+        // "not targeted as an app" rather than "not in the catalog": coverage is computed from process ops
+        // only, so a Windows component the catalog switches off through a registry policy still lands in
+        // this count. Saying "not in the catalog" about it would be false.
         var note = addable == 0
-            ? "Everything running that Quiesce may act on is already covered by the catalog."
-            : $"{addable} of these are not in the catalog, so Engage does not look for them and will not " +
-              "close them. Adding one creates an entry that starts switched OFF — turn it on in Features.";
+            ? "Every running app Quiesce may act on is already targeted by a process entry."
+            : $"{addable} of these are not targeted as running apps, so Engage does not look for them and " +
+              "will not close them. Adding one creates an entry that starts switched OFF — turn it on in " +
+              "Features. Note that a Windows component can still be handled by a registry or service entry " +
+              "instead, which this list cannot see.";
 
         // The omission is stated rather than left to be noticed. A list that quietly shortens is the exact
         // failure this page exists to fix.
@@ -220,6 +226,38 @@ public sealed record AppRow
     /// <summary>The covering entries the user added themselves, so removal is theirs to do.</summary>
     public required IReadOnlyList<string> RemovableEntryIds { get; init; }
 
+    /// <summary>
+    /// Why this application can or cannot be asked to close, without overstating either.
+    /// </summary>
+    /// <remarks>
+    /// Three cases, not two. "No window, so it cannot be asked to close" was false for the middle one: a
+    /// directory whose only windowed process is protected — an app bundling its own <c>msedgewebview2</c> is
+    /// the sharp case — does own a window, and saying otherwise is the app being confidently wrong about
+    /// the machine.
+    /// <para>
+    /// The reason is also stated as what it is. Window ownership decides closability only because Quiesce
+    /// renounced the forceful path: <c>TerminateProcess</c> and both <c>Process.Kill</c> overloads are
+    /// compile errors here. Task Manager ends windowless processes routinely, so this is a capability limit
+    /// created by a safety choice, not a platform fact — and the sentence should not imply otherwise.
+    /// </para>
+    /// </remarks>
+    private static string Closability(AppCandidate candidate)
+    {
+        if (candidate.CanClose)
+        {
+            return "Can be asked to close.";
+        }
+
+        if (candidate.WindowedButProtectedCount > 0)
+        {
+            return $"The window in this folder belongs to {candidate.WindowedButProtectedCount} process(es) " +
+                   "Quiesce will not touch, so this cannot be asked to close. It can still be throttled.";
+        }
+
+        return "Nothing here owns a window. Closing means asking a window to close — Quiesce has no " +
+               "forceful option, by design — so this cannot be closed at all. It can still be throttled.";
+    }
+
     public static AppRow From(AppCandidate candidate, IReadOnlySet<string> userEntryIds)
     {
         ArgumentNullException.ThrowIfNull(candidate);
@@ -243,14 +281,12 @@ public sealed record AppRow
                 : $"{candidate.ProcessCount} processes, {candidate.WindowedCount} with a window",
             Detail = candidate.IsCovered
                 ? $"{names}. Covered by {string.Join(", ", candidate.CoveredBy)}."
-                : names + (candidate.CanClose
-                    ? "."
-                    : ". No window, so it cannot be asked to close — Quiesce has no forceful option. It can still be throttled."),
+                : names + ". " + Closability(candidate),
             PathLabel = candidate.InstallDirectory,
             CanClose = candidate.CanClose,
             CloseTip = candidate.CanClose
                 ? "Asks every window to close, exactly as the X button does, and respects a save-your-work prompt. Restore does NOT reopen it."
-                : "Nothing here owns a window, so there is nothing to send a close request to.",
+                : Closability(candidate),
             CoveredVisibility = candidate.IsCovered ? Visibility.Visible : Visibility.Collapsed,
             AddVisibility = candidate.IsCovered ? Visibility.Collapsed : Visibility.Visible,
             RemoveVisibility = removable.Count == 0 ? Visibility.Collapsed : Visibility.Visible,

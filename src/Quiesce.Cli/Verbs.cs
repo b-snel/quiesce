@@ -43,6 +43,31 @@ internal static class Verbs
         {
             Console.WriteLine($"catalog: unreadable ({ex.Message}) - coverage is not shown below.");
         }
+        catch (StateUnreadableException ex)
+        {
+            // The data root holds the user-added apps and is Administrators-only, so an unelevated run
+            // cannot read it. That must not kill the verb: this is the one command whose job is to answer
+            // "what is running that Quiesce might act on", and the process list needs no elevation at all.
+            //
+            // The SHIPPED catalog is readable, though, and falling back to it matters. Reporting no
+            // coverage at all would have said "NO PROCESS ENTRY" about Comet, which the shipped browser
+            // group covers - the same kind of overclaim as calling an unreadable file absent, just pointed
+            // the other way. So: shipped coverage is exact, and only the user additions are unknown.
+            try
+            {
+                catalog = env.CatalogPath is null ? null : CatalogLoader.LoadFile(env.CatalogPath);
+                Console.WriteLine(
+                    "catalog: shipped entries only - the apps you added could not be read, so an app you " +
+                    "added yourself may show below as untargeted when it is not.");
+            }
+            catch (Exception inner) when (inner is CatalogException or IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine($"catalog: coverage UNKNOWN ({inner.Message}).");
+            }
+
+            Console.WriteLine($"         {ex.Message}");
+            Console.WriteLine("         Everything below is still accurate about what is RUNNING.");
+        }
 
         var processes = new Win32ProcessControl();
         var services = new Win32ServiceControl();
@@ -57,9 +82,11 @@ internal static class Verbs
         var candidates = result.Candidates;
         var uncovered = candidates.Count(c => !c.IsCovered);
 
+        // "not targeted as an app", not "not in the catalog". Coverage below is computed from process ops
+        // only, so a component the catalog handles through a registry policy counts as uncovered here.
         Console.WriteLine(
             $"{candidates.Count} running application(s) Quiesce may act on: " +
-            $"{uncovered} not in the catalog, {candidates.Count - uncovered} covered.");
+            $"{uncovered} not targeted by a process entry, {candidates.Count - uncovered} targeted.");
 
         if (result.WindowsComponentsOmitted > 0)
         {
@@ -81,9 +108,13 @@ internal static class Verbs
         foreach (var app in candidates)
         {
             Console.WriteLine();
-            Console.WriteLine($"  {app.DisplayName}  [{(app.IsCovered ? string.Join(", ", app.CoveredBy) : "NOT IN CATALOG")}]");
+            Console.WriteLine($"  {app.DisplayName}  [{(app.IsCovered ? string.Join(", ", app.CoveredBy) : "NO PROCESS ENTRY")}]");
             Console.WriteLine($"    processes: {app.ProcessCount} ({app.WindowedCount} with a window)" +
-                              (app.CanClose ? string.Empty : " - no window, so it cannot be asked to close"));
+                              (app.CanClose
+                                  ? string.Empty
+                                  : app.WindowedButProtectedCount > 0
+                                      ? $" - the {app.WindowedButProtectedCount} windowed process(es) here are ones Quiesce will not touch, so it cannot be closed"
+                                      : " - no window, so it cannot be asked to close"));
             Console.WriteLine($"    images:    {string.Join(", ", app.ImageNames.Select(n => n + ".exe"))}");
             Console.WriteLine($"    directory: {app.InstallDirectory}");
             Console.WriteLine($"    would pin: {app.DirectoryFragment}");

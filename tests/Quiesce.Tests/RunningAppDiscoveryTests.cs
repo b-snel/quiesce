@@ -182,6 +182,46 @@ public sealed class RunningAppDiscoveryTests : IDisposable
         Assert.Equal(0, found.WindowedCount);
     }
 
+    /// <summary>
+    /// A directory whose only windowed process is protected must not be described as owning no window.
+    /// </summary>
+    /// <remarks>
+    /// WindowedCount counts only processes that survived the eligibility filter, so the sharp case is an
+    /// application bundling its own fixed-version <c>msedgewebview2</c>: that process is never-touch by
+    /// name, it owns the window, and the row would have asserted "nothing here owns a window" about a
+    /// directory that demonstrably does. Being confidently wrong about the machine is the failure mode
+    /// this project exists to avoid, so the two cases are now distinguishable.
+    /// </remarks>
+    [Fact]
+    public void AWindowOwnedByAProtectedProcessIsNotReportedAsNoWindow()
+    {
+        const string dir = @"C:\Program Files\Vendor\App";
+        _processes.Add("msedgewebview2", dir + @"\msedgewebview2.exe", hasWindow: true);
+        _processes.Add("apphelper", dir + @"\apphelper.exe", hasWindow: false);
+
+        var found = Assert.Single(Discovery().Discover(catalog: null).Candidates);
+
+        Assert.False(found.CanClose);
+        Assert.Equal(0, found.WindowedCount);
+
+        // The distinguishing fact: there IS a window here, it just belongs to something off limits.
+        Assert.Equal(1, found.WindowedButProtectedCount);
+
+        // The protected process is not offered as a target either.
+        Assert.Equal(["apphelper"], found.ImageNames);
+    }
+
+    [Fact]
+    public void AGenuinelyWindowlessGroupReportsNoProtectedWindowEither()
+    {
+        _processes.Add("daemon", @"C:\Program Files\Daemon\daemon.exe", hasWindow: false);
+
+        var found = Assert.Single(Discovery().Discover(catalog: null).Candidates);
+
+        Assert.False(found.CanClose);
+        Assert.Equal(0, found.WindowedButProtectedCount);
+    }
+
     [Fact]
     public void AnAppTheCatalogAlreadyCoversIsMarked()
     {

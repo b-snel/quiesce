@@ -196,6 +196,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- **M6** — **`quiesce list-apps` refused to run unelevated, which is most of the point of it.** The verb
+  merges the user-added apps from the Administrators-only data root, and `UserCatalogStore.Load` throws
+  `StateUnreadableException` there — a type the verb's catch did not cover, so a command whose own comment
+  says the list "is still worth printing without a catalog" died with exit 4 instead. It now falls back to
+  the *shipped* catalog and says so, because reporting no coverage at all claimed "NO PROCESS ENTRY" about
+  Comet, which the shipped browser group covers — the same overclaim as calling an unreadable file absent,
+  pointed the other way. Only the user's own additions are reported as unknown.
+- **M6** — **"No window, so it cannot be asked to close" could be false.** `WindowedCount` counts only
+  processes that survive the eligibility filter, so a directory whose *only* windowed process is protected —
+  an application bundling its own fixed-version `msedgewebview2` is the sharp case — was described as owning
+  no window while it demonstrably owned one. Candidates now carry `WindowedButProtectedCount` and the three
+  cases read differently: closable, has a window that belongs to something Quiesce will not touch, and
+  genuinely windowless.
+- **M6** — **"NOT IN CATALOG" overclaimed.** Coverage is computed from process ops only, so a Windows
+  component the catalog switches off through a registry policy — `shell.disable-widgets-policy` targets
+  Widgets exactly that way — was reported as absent from the catalog. Now "no process entry" / "already
+  targeted", with the limitation stated in the page summary.
 - **M6** — **An entry rollback that could not restart a service said nothing about it.** `RestoreService`
   called `TryStart(..., out _)` and returned `void`, so the mid-apply rollback path was the one undo in the
   engine that could put a service's configuration back, fail to start it, and still report a clean unwind —

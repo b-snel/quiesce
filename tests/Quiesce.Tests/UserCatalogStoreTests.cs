@@ -31,6 +31,7 @@ public sealed class UserCatalogStoreTests : IDisposable
         ImageNames = imageNames.Length == 0 ? [display] : imageNames,
         ProcessCount = 1,
         WindowedCount = 1,
+        WindowedButProtectedCount = 0,
         DisplayName = display,
         CoveredBy = [],
     };

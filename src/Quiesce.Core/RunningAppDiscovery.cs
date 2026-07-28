@@ -38,10 +38,32 @@ public sealed record AppCandidate
     /// </remarks>
     public required int WindowedCount { get; init; }
 
+    /// <summary>
+    /// Windowed processes in this directory that the eligibility filter removed.
+    /// </summary>
+    /// <remarks>
+    /// Exists so the UI cannot say something false. <see cref="WindowedCount"/> counts only processes that
+    /// survived the eligibility filter, so a directory whose ONLY windowed process is protected — the
+    /// sharp case is an application bundling a fixed-version <c>msedgewebview2</c>, which is never-touch by
+    /// name — produces <c>WindowedCount == 0</c> for a directory that demonstrably does own a window. The
+    /// honest sentence there is "the window belongs to something Quiesce will not touch", not "nothing
+    /// here owns a window".
+    /// </remarks>
+    public required int WindowedButProtectedCount { get; init; }
+
     /// <summary>The name to show. The windowed process's image name, which is the one the user knows.</summary>
     public required string DisplayName { get; init; }
 
-    /// <summary>Ids of catalog entries whose ops already match processes in this group.</summary>
+    /// <summary>
+    /// Ids of catalog entries whose <em>process</em> ops already match processes in this group.
+    /// </summary>
+    /// <remarks>
+    /// PROCESS OPS ONLY, and callers must not render an empty list as "the catalog does not cover this".
+    /// A registry or service entry can address an application perfectly well without naming a process —
+    /// <c>shell.disable-widgets-policy</c> turns Widgets off through a policy value, so Widgets shows up
+    /// here with an empty <c>CoveredBy</c> while the catalog demonstrably does handle it. The honest reading
+    /// of empty is "nothing in the catalog targets this as a running process", which is a narrower claim.
+    /// </remarks>
     public required IReadOnlyList<string> CoveredBy { get; init; }
 
     public bool IsCovered => CoveredBy.Count > 0;
@@ -125,6 +147,14 @@ public sealed class RunningAppDiscovery(
                 && classifier.Classify(p) is ProcessClass.Ordinary or ProcessClass.Browser)
             .ToList();
 
+        // Windowed processes per directory across the WHOLE live list, not just the eligible subset, so a
+        // candidate can tell "no window here" from "the window here is one Quiesce will not touch".
+        var windowedPerDirectory = live
+            .Where(p => p.HasVisibleWindow && !string.IsNullOrEmpty(p.ImagePath))
+            .GroupBy(p => Path.GetDirectoryName(p.ImagePath!) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .Where(g => !string.IsNullOrEmpty(g.Key))
+            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
         var processOps = catalog?.Entries
             .SelectMany(e => e.Ops.OfType<ProcessOpSpec>().Select(op => (e.Id, Op: op)))
             .ToList() ?? [];
@@ -190,13 +220,17 @@ public sealed class RunningAppDiscovery(
             var display = members.FirstOrDefault(p => p.HasVisibleWindow)?.ImageName
                 ?? members.OrderBy(p => p.ImageName, StringComparer.OrdinalIgnoreCase).First().ImageName;
 
+            var eligibleWindowed = members.Count(p => p.HasVisibleWindow);
+            windowedPerDirectory.TryGetValue(group.Key, out var allWindowed);
+
             candidates.Add(new AppCandidate
             {
                 InstallDirectory = group.Key,
                 DirectoryFragment = fragment,
                 ImageNames = names,
                 ProcessCount = members.Count,
-                WindowedCount = members.Count(p => p.HasVisibleWindow),
+                WindowedCount = eligibleWindowed,
+                WindowedButProtectedCount = Math.Max(0, allWindowed - eligibleWindowed),
                 DisplayName = Bare(display),
                 CoveredBy = covered,
             });
