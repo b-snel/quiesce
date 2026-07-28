@@ -32,7 +32,7 @@
                  it read as boilerplate. Amber, the same as the reboot banner, because both are
                  warnings - drift has its own colour and does not borrow this one. -->
             <Border x:Name="CloseWarning" CornerRadius="6" Padding="16,12" Margin="0,12,0,0"
-                    Background="#33D29922" Visibility="Collapsed">
+                    Background="{DynamicResource StateWarningBrush}" Visibility="Collapsed">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />

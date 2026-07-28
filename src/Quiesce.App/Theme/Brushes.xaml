@@ -18,4 +18,34 @@
          is red and makes the selected item read as an error state. -->
     <SolidColorBrush x:Key="QuiesceAccentBrush" Color="#FF3FA9FF" />
 
+    <!-- Machine-state palette. ONE KEY PER FACT, and that is the whole reason this block exists:
+         #33D29922 previously carried three different meanings across five files. It was the Engaged
+         card, it was the Unknown card, and it was the reboot banner - so "your machine is in the
+         state you asked for", "Quiesce cannot tell what state your machine is in", and "a change is
+         waiting on a restart" all rendered identically. DashboardPage's own comment said "not dirty"
+         and "cannot tell" must never render the same, immediately above the branch where they did.
+
+         ENGAGED IS DELIBERATELY NOT AMBER. It is the healthy state this product exists to produce,
+         and amber read as a warning about it. It is now the accent blue.
+
+         UNKNOWN IS RED because Quiesce cannot answer the only question it is for, and Engage is
+         refused in that state - refusal is a problem, not a caution.
+
+         ORANGE IS DRIFT AND ONLY DRIFT. Nothing else may borrow it, or the one signal added in this
+         batch stops meaning anything. AMBER stays for warnings that are not drift: the reboot banner
+         and the preflight's save-your-work banner both keep it.
+
+         Alpha 0x26/0x33 because these are card and banner BACKGROUNDS behind body text; the
+         Evidence* keys above are 0xFF because they paint glyphs and text. -->
+    <SolidColorBrush x:Key="StateCleanBrush" Color="#263FB950" />
+    <SolidColorBrush x:Key="StateEngagedBrush" Color="#3358A6FF" />
+    <SolidColorBrush x:Key="StateDriftBrush" Color="#33F0883E" />
+    <SolidColorBrush x:Key="StateProblemBrush" Color="#33F85149" />
+    <SolidColorBrush x:Key="StateWarningBrush" Color="#33D29922" />
+
+    <!-- The neutral result banner. Named because ShowResult's null-brush default was constructing it
+         inline on every call, which meant the one background in the app with no name was also the one
+         allocated most often. -->
+    <SolidColorBrush x:Key="StateNeutralBrush" Color="#18FFFFFF" />
+
 </ResourceDictionary>

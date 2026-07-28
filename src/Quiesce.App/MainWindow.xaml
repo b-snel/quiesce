@@ -29,7 +29,7 @@
                 Padding="16,12"
                 CornerRadius="6"
                 Visibility="Collapsed"
-                Background="#33D29922">
+                Background="{DynamicResource StateWarningBrush}">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />

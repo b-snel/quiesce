@@ -8,10 +8,6 @@ namespace Quiesce.App.Views;
 
 public partial class DashboardPage
 {
-    private static readonly Brush CleanBrush = new SolidColorBrush(Color.FromArgb(0x26, 0x3F, 0xB9, 0x50));
-    private static readonly Brush EngagedBrush = new SolidColorBrush(Color.FromArgb(0x33, 0xD2, 0x99, 0x22));
-    private static readonly Brush ProblemBrush = new SolidColorBrush(Color.FromArgb(0x33, 0xF8, 0x51, 0x49));
-
     private AppState _state;
 
     public DashboardPage(AppState state)
@@ -57,32 +53,95 @@ public partial class DashboardPage
             ? string.Empty
             : "\n\n" + string.Join("\n", lines.Select(line => "  • " + line));
 
+    /// <summary>
+    /// Which machine state the card is describing. One member per FACT, never per colour.
+    /// </summary>
+    /// <remarks>
+    /// Extracted from an if/else chain so the mapping to a brush key can be asserted exhaustively. The
+    /// chain itself was correct; what it lacked was any way to notice that two of its three arms were
+    /// setting the same background. <c>Drifted</c> arrives with the drift detector — it is declared here
+    /// because the palette and the exhaustiveness test are what make it a distinct fact rather than a
+    /// second meaning bolted onto an existing colour.
+    /// </remarks>
+    internal enum CardState
+    {
+        Clean,
+        Engaged,
+        Drifted,
+        Unknown,
+    }
+
+    /// <summary>
+    /// The state the card is in, in strict precedence order.
+    /// </summary>
+    /// <remarks>
+    /// UNKNOWN FIRST, always. "Not dirty" and "cannot tell" are different facts, and showing the
+    /// reassuring one for both is exactly how a tool ends up lying about the only thing it is for.
+    /// </remarks>
+    internal static CardState StateOf(AppState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        return state.StateUnknown ? CardState.Unknown
+            : state.MachineState.IsDirty ? CardState.Engaged
+            : CardState.Clean;
+    }
+
+    /// <summary>
+    /// The brush key for a state. Distinct for every member, and a test asserts that.
+    /// </summary>
+    /// <remarks>
+    /// Engaged is NOT the warning amber it used to be: it is the healthy state this product exists to
+    /// produce. Unknown is the problem red, because Quiesce cannot answer the only question it is for
+    /// and Engage is refused. Those two shared one colour, alongside the reboot banner, which is how
+    /// three unrelated facts came to look identical.
+    /// </remarks>
+    internal static string BrushKeyFor(CardState state) => state switch
+    {
+        CardState.Clean => "StateCleanBrush",
+        CardState.Engaged => "StateEngagedBrush",
+        CardState.Drifted => "StateDriftBrush",
+        CardState.Unknown => "StateProblemBrush",
+        _ => "StateNeutralBrush",
+    };
+
+    /// <summary>
+    /// Resolves a palette key, or falls back to gray as the Features evidence badges do.
+    /// </summary>
+    /// <remarks>
+    /// A null here means <c>Theme/Brushes.xaml</c> was not merged, which is a build misconfiguration
+    /// rather than a runtime condition — so the fallback exists to avoid taking the window down, and
+    /// <c>Every_card_state_resolves_to_its_own_brush</c> exists so it cannot ship unnoticed.
+    /// </remarks>
+    private static Brush Palette(string key) =>
+        System.Windows.Application.Current?.TryFindResource(key) as Brush ?? Brushes.Gray;
+
     private void Render()
     {
-        if (_state.StateUnknown)
+        var card = StateOf(_state);
+        StateBanner.Background = Palette(BrushKeyFor(card));
+
+        switch (card)
         {
-            // Never rendered as clean. "Not dirty" and "cannot tell" are different facts, and showing the
-            // reassuring one for both is exactly how a tool ends up lying about the only thing it is for.
-            StateBanner.Background = EngagedBrush;
-            StateHeadline.Text = "Unknown";
-            StateDetail.Text =
-                "Quiesce cannot read its own state file, so it does not know whether this machine is " +
-                "modified. Engage is disabled: engaging over an already-engaged machine would capture the " +
-                "first session's changes as if they were your original settings.";
-        }
-        else if (_state.MachineState.IsDirty)
-        {
-            StateBanner.Background = EngagedBrush;
-            StateHeadline.Text = "Engaged";
-            StateDetail.Text =
-                $"Session {_state.MachineState.ActiveSessionId:D} is active. " +
-                "Restore puts everything back exactly as it was.";
-        }
-        else
-        {
-            StateBanner.Background = CleanBrush;
-            StateHeadline.Text = "Machine is clean";
-            StateDetail.Text = "No Quiesce changes are active. Everything is as Windows left it.";
+            case CardState.Unknown:
+                StateHeadline.Text = "Unknown";
+                StateDetail.Text =
+                    "Quiesce cannot read its own state file, so it does not know whether this machine is " +
+                    "modified. Engage is disabled: engaging over an already-engaged machine would capture the " +
+                    "first session's changes as if they were your original settings.";
+                break;
+
+            case CardState.Engaged:
+                StateHeadline.Text = "Engaged";
+                StateDetail.Text =
+                    $"Session {_state.MachineState.ActiveSessionId:D} is active. " +
+                    "Restore puts everything back exactly as it was.";
+                break;
+
+            default:
+                StateHeadline.Text = "Machine is clean";
+                StateDetail.Text = "No Quiesce changes are active. Everything is as Windows left it.";
+                break;
         }
 
         EngageButton.IsEnabled = CanEngage;
@@ -94,16 +153,40 @@ public partial class DashboardPage
         EnvironmentDetail.Text =
             $"data root   {_state.DataRoot}\n" +
             $"catalog     {_state.CatalogPath ?? "<none found>"}\n" +
-            $"tweaks      {(_state.Catalog is null ? "n/a" : $"{_state.Catalog.Entries.Count} in catalog, {applied} already lean, {pending} available")}\n" +
+            $"tweaks      {TweakCounts(applied, pending)}\n" +
             $"version     {AppState.AppVersion()}" +
             (_state.LoadError is null ? string.Empty : $"\n\nproblem     {_state.LoadError}");
+    }
+
+    /// <summary>
+    /// The tweak counts, worded for whether the machine is engaged or not.
+    /// </summary>
+    /// <remarks>
+    /// It said "{n} available" in both cases. On an engaged machine those tweaks are not available —
+    /// they are the ones currently holding, and Engage is refused anyway, so "available" read as an
+    /// offer the app would not honour. "already lean" is also wrong while engaged for the same reason
+    /// in reverse: a value is lean BECAUSE Quiesce made it lean, which is a different fact from having
+    /// found it that way.
+    /// </remarks>
+    private string TweakCounts(int applied, int pending)
+    {
+        if (_state.Catalog is null)
+        {
+            return "n/a";
+        }
+
+        var total = _state.Catalog.Entries.Count;
+
+        return _state.MachineState.IsDirty
+            ? $"{total} in catalog, {pending} in force this session, {applied} were already lean"
+            : $"{total} in catalog, {applied} already lean, {pending} available";
     }
 
     private async void OnEngage(object sender, RoutedEventArgs e)
     {
         if (_state.Catalog is null)
         {
-            ShowResult(ProblemBrush, "No catalog is loaded, so there is nothing to apply.");
+            ShowResult(ResultTone.Bad, "No catalog is loaded, so there is nothing to apply.");
             return;
         }
 
@@ -118,7 +201,7 @@ public partial class DashboardPage
 
             if (!plan.EffectiveSteps.Any())
             {
-                ShowResult(CleanBrush, "Nothing to do — every enabled tweak is already at its lean value.");
+                ShowResult(ResultTone.Good, "Nothing to do — every enabled tweak is already at its lean value.");
                 return;
             }
 
@@ -127,18 +210,18 @@ public partial class DashboardPage
             var dialog = new PreflightDialog(plan, restorePoint) { Owner = Window.GetWindow(this) };
             if (dialog.ShowDialog() != true)
             {
-                ShowResult(null, "Cancelled. Nothing was changed.");
+                ShowResult(ResultTone.Neutral, "Cancelled. Nothing was changed.");
                 return;
             }
 
             var result = await Task.Run(() => engine.Engage(plan, FaultInjector.None));
 
-            Brush brush;
+            ResultTone tone;
             string message;
 
             if (result.Success)
             {
-                brush = CleanBrush;
+                tone = ResultTone.Good;
                 message =
                     $"Engaged. {result.Applied} change{(result.Applied == 1 ? "" : "s")} applied" +
                     (result.SkippedNoop > 0 ? $", {result.SkippedNoop} already lean" : string.Empty) + "." +
@@ -154,7 +237,7 @@ public partial class DashboardPage
                 var detail = string.Join("\n", result.RolledBackEntries.Select(id =>
                     $"  • {id}: {(result.Diagnoses.TryGetValue(id, out var d) ? d : "verification failed")}"));
 
-                brush = ProblemBrush;
+                tone = ResultTone.Bad;
                 message =
                     $"Engaged. {result.Applied} change{(result.Applied == 1 ? "" : "s")} applied. " +
                     $"{result.RolledBackEntries.Count} rolled back — nothing is half-applied:\n" + detail;
@@ -166,13 +249,13 @@ public partial class DashboardPage
             // declined, which is almost always a save-your-work prompt still sitting on screen. Until
             // now the engine wrote both and only the CLI read them, so a GUI Engage that left a browser
             // open — or closed one for good — said nothing about either.
-            ShowResult(brush, message + Bullets(result.Notes));
+            ShowResult(tone, message + Bullets(result.Notes));
 
             Refresh();
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
-            ShowResult(ProblemBrush, ex.Message);
+            ShowResult(ResultTone.Bad, ex.Message);
         }
         finally
         {
@@ -187,7 +270,7 @@ public partial class DashboardPage
         {
             if (_state.MachineState.ActiveSessionId is not { } sessionId)
             {
-                ShowResult(null, "No active session to restore.");
+                ShowResult(ResultTone.Neutral, "No active session to restore.");
                 return;
             }
 
@@ -202,7 +285,7 @@ public partial class DashboardPage
                 // a value the user changed after Engage was deliberately left as they set it. Both were
                 // journaled and then dropped on the floor here, so the one report that claims the
                 // machine is back was the one report that did not mention what had not come back.
-                ShowResult(CleanBrush,
+                ShowResult(ResultTone.Good,
                     $"Restored. {result.Reverted} change{(result.Reverted == 1 ? "" : "s")} put back." +
                     (result.RebootPendingEntries.Count > 0
                         ? " The registry is back as it was, but some of these need a restart before the " +
@@ -224,7 +307,7 @@ public partial class DashboardPage
                     parts.Add($"{result.Failed} failed");
                 }
 
-                ShowResult(ProblemBrush,
+                ShowResult(ResultTone.Bad,
                     string.Join("; ", parts) + ". The machine is still marked engaged until every change is back." +
                     (result.Messages.Count > 0 ? "\n\n" + string.Join("\n", result.Messages) : string.Empty));
             }
@@ -233,7 +316,7 @@ public partial class DashboardPage
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
-            ShowResult(ProblemBrush, ex.Message);
+            ShowResult(ResultTone.Bad, ex.Message);
         }
         finally
         {
@@ -264,9 +347,31 @@ public partial class DashboardPage
         RestoreButton.IsEnabled = !busy && CanRestore;
     }
 
-    private void ShowResult(Brush? background, string message)
+    /// <summary>
+    /// How the last operation went. Separate from <see cref="CardState"/> on purpose.
+    /// </summary>
+    /// <remarks>
+    /// The card describes the machine; this describes the operation that just ran. They were both
+    /// reaching into the same three private brushes, which is why a green "Restored." could sit under a
+    /// card painted the same green for a completely different reason.
+    /// </remarks>
+    private enum ResultTone
     {
-        ResultBanner.Background = background ?? new SolidColorBrush(Color.FromArgb(0x18, 0xFF, 0xFF, 0xFF));
+        /// <summary>Cancelled, or nothing to do. Not an outcome to colour.</summary>
+        Neutral,
+        Good,
+        Bad,
+    }
+
+    private void ShowResult(ResultTone tone, string message)
+    {
+        ResultBanner.Background = Palette(tone switch
+        {
+            ResultTone.Good => "StateCleanBrush",
+            ResultTone.Bad => "StateProblemBrush",
+            _ => "StateNeutralBrush",
+        });
+
         ResultText.Text = message;
         ResultBanner.Visibility = Visibility.Visible;
     }

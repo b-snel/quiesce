@@ -236,6 +236,92 @@ public class ViewConstructionTests
     }
 
     [Fact]
+    public void Every_card_state_resolves_to_its_own_brush()
+    {
+        // The bug this replaces: #33D29922 meant three different things across five files. It was the
+        // Engaged card, the Unknown card, AND the reboot banner - so "your machine is as you asked",
+        // "Quiesce cannot tell what state your machine is in", and "a change is waiting on a restart"
+        // were indistinguishable. DashboardPage's own comment said the first two must never render the
+        // same, directly above the branch where they did.
+        //
+        // Asserted two ways, because either alone is passable while the palette is broken: every state
+        // maps to a DIFFERENT key, and every key actually RESOLVES (a typo would silently fall back to
+        // gray for all of them, which is uniform and therefore also a lie).
+        var states = Enum.GetValues<DashboardPage.CardState>();
+        var keys = states.Select(DashboardPage.BrushKeyFor).ToList();
+
+        Assert.Equal(keys.Count, keys.Distinct(StringComparer.Ordinal).Count());
+
+        var resolved = OnStaThread(() => keys
+            .Select(k => System.Windows.Application.Current.TryFindResource(k) as System.Windows.Media.Brush)
+            .ToList());
+
+        Assert.All(resolved, brush => Assert.NotNull(brush));
+
+        // And the colours themselves are distinct, not merely the keys. Two keys pointing at one hex
+        // would satisfy everything above and still render two facts identically.
+        var colours = resolved
+            .Cast<System.Windows.Media.SolidColorBrush>()
+            .Select(b => b.Color)
+            .ToList();
+
+        Assert.Equal(colours.Count, colours.Distinct().Count());
+    }
+
+    [Fact]
+    public void The_keys_referenced_only_from_XAML_resolve()
+    {
+        // StateWarningBrush and StateNeutralBrush have no enum to enumerate: they are named from
+        // DynamicResource in three XAML files and from one switch arm. A DynamicResource that does not
+        // resolve throws nothing and paints nothing, so the reboot banner and the save-your-work banner
+        // would go transparent - still legible, still laid out, and no longer reading as a warning at
+        // all. Exactly the failure that has no visible symptom until someone is looking for one.
+        var resolved = OnStaThread(() => new[] { "StateWarningBrush", "StateNeutralBrush" }
+            .Select(k => System.Windows.Application.Current.TryFindResource(k) as System.Windows.Media.Brush)
+            .ToList());
+
+        Assert.All(resolved, brush => Assert.NotNull(brush));
+    }
+
+    [Fact]
+    public void Engaged_no_longer_renders_as_a_warning()
+    {
+        // Specifically pinned rather than left implicit: Engaged is the healthy state this product
+        // exists to produce, and it spent three milestones painted the same amber as "needs a restart".
+        var amber = System.Windows.Media.Color.FromArgb(0x33, 0xD2, 0x99, 0x22);
+
+        var engaged = OnStaThread(() =>
+            System.Windows.Application.Current.TryFindResource(
+                DashboardPage.BrushKeyFor(DashboardPage.CardState.Engaged)) as System.Windows.Media.SolidColorBrush);
+
+        Assert.NotNull(engaged);
+        Assert.NotEqual(amber, engaged.Color);
+    }
+
+    [Fact]
+    public void The_state_is_unknown_before_it_is_engaged_and_engaged_before_it_is_clean()
+    {
+        // Precedence, not just mapping. A state file that cannot be read must never resolve to Clean,
+        // and IsDirty is default(bool) == false on the record that carries StateUnknown - so an order
+        // that tested IsDirty first would report "Machine is clean" for an unreadable state file.
+        var unreadable = new AppState
+        {
+            MachineState = new QuiesceState(),
+            DataRoot = @"C:\ProgramData\Quiesce",
+            StateUnknown = true,
+        };
+
+        Assert.Equal(DashboardPage.CardState.Unknown, DashboardPage.StateOf(unreadable));
+        Assert.Equal(
+            DashboardPage.CardState.Engaged,
+            DashboardPage.StateOf(CleanState() with
+            {
+                MachineState = new QuiesceState { IsDirty = true, ActiveSessionId = Guid.NewGuid() },
+            }));
+        Assert.Equal(DashboardPage.CardState.Clean, DashboardPage.StateOf(CleanState()));
+    }
+
+    [Fact]
     public void The_reversibility_note_does_not_call_a_close_reversible()
     {
         // The live bug: RequiresElevation was standing in for "is this serious", and a process op's
