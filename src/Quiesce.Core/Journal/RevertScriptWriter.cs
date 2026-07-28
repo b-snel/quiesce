@@ -160,6 +160,57 @@ public sealed class RevertScriptWriter : IDisposable
     }
 
     /// <summary>
+    /// Appends the inverse of a power scheme switch as a literal <c>powercfg</c> command.
+    /// </summary>
+    /// <remarks>
+    /// The cleanest line in this whole file, and worth saying why: the prior is one GUID, so the undo is
+    /// one command with no ordering, no flags and no conditionals. It also needs no elevation — measured
+    /// on this machine, <c>powercfg /setactive</c> succeeds as a standard interactive user — so this is
+    /// the one step of the emergency script that still works if the user cannot get an admin prompt.
+    /// <para>
+    /// The scheme is written as a GUID, never as a name: <c>powercfg /setactive</c> accepts an alias like
+    /// <c>SCHEME_BALANCED</c>, but only for the schemes Microsoft ships, and the friendly name is
+    /// localized. The GUID is the identity everywhere else in this feature and it is the identity here.
+    /// </para>
+    /// </remarks>
+    public void AppendPowerInverse(int stepId, PowerPrior prior)
+    {
+        ArgumentNullException.ThrowIfNull(prior);
+
+        _writer.WriteLine($"REM --- step {stepId}: restore power plan {Ascii(prior.FriendlyName) ?? "(name unknown)"}");
+
+        if (!prior.Readable)
+        {
+            _writer.WriteLine("REM  (the previous plan could not be read; choose one in Windows)");
+            _writer.WriteLine();
+            return;
+        }
+
+        _writer.WriteLine($"powercfg /setactive {prior.Scheme:D}");
+        _writer.WriteLine("if errorlevel 1 set QUIESCE_FAILED=1");
+        _writer.WriteLine();
+    }
+
+    /// <summary>
+    /// Strips anything this ASCII, CRLF file cannot represent.
+    /// </summary>
+    /// <remarks>
+    /// Power scheme names are localized, so on a non-English Windows they arrive as text an ASCII
+    /// StreamWriter turns into '?' — and this string only ever appears inside a REM comment, where a
+    /// mangled character is cosmetic. Replaced explicitly rather than left to the encoder so the comment
+    /// reads as a deliberate omission rather than as corruption.
+    /// </remarks>
+    private static string? Ascii(string? raw)
+    {
+        if (raw is null)
+        {
+            return null;
+        }
+
+        return raw.All(char.IsAscii) ? raw : "(name omitted: not representable here)";
+    }
+
+    /// <summary>
     /// Records a process step as a comment, because there is no safe command to emit.
     /// </summary>
     /// <remarks>

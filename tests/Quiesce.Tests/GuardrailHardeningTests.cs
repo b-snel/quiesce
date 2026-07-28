@@ -7,6 +7,7 @@ namespace Quiesce.Tests;
 /// Tests for the guardrail hardening that came out of the M4 adversarial review. Each one pins a
 /// specific hole that review found.
 /// </summary>
+[Collection(SessionGuardCollection.Name)]
 public class GuardrailHardeningTests
 {
     [Fact]

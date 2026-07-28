@@ -142,6 +142,7 @@ public enum ThrottleLevel
 [JsonDerivedType(typeof(RegistryOpSpec), "registry")]
 [JsonDerivedType(typeof(ServiceOpSpec), "service")]
 [JsonDerivedType(typeof(ProcessOpSpec), "process")]
+[JsonDerivedType(typeof(PowerOpSpec), "power")]
 public abstract record OpSpec
 {
     /// <summary>True when applying this op needs administrator rights, independent of the entry.</summary>
@@ -282,6 +283,50 @@ public sealed record ProcessOpSpec : OpSpec
 
     internal static string Bare(string imageName) =>
         imageName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? imageName[..^4] : imageName;
+}
+
+/// <summary>Selects an existing Windows power scheme as the active one.</summary>
+/// <remarks>
+/// <para>
+/// SELECTS. It does not create, duplicate, delete or rename a scheme, and it does not write a single
+/// setting index inside one. That restraint is the entire reason this op is safe: the prior is one
+/// GUID, so there is exactly one fact to put back, and the undo cannot be partially right. An op that
+/// edited settings would have to capture 58 AC/DC pairs and would fail the project's own test — that
+/// the undo is more trustworthy than the change.
+/// </para>
+/// <para>
+/// A scheme the machine does not have is a NO-OP WITH A REASON, exactly like a service that is absent
+/// on this build. Ultimate Performance in particular is genuinely missing on many machines. Quiesce
+/// deliberately does not run <c>powercfg -duplicatescheme</c> to create it: a scheme Quiesce created
+/// is a scheme Restore would then be obliged to delete, and that is a much larger risk than declining
+/// to offer the row.
+/// </para>
+/// <para>
+/// Identified by GUID rather than by name because friendly names are localized — "Ultimate
+/// Performance" does not exist under that spelling on a non-English Windows, and a name-matched
+/// catalog would silently find nothing there while reporting the row as available.
+/// </para>
+/// </remarks>
+public sealed record PowerOpSpec : OpSpec
+{
+    /// <summary>The scheme to make active. Must already exist on the machine.</summary>
+    [JsonPropertyName("scheme")]
+    public required Guid Scheme { get; init; }
+
+    /// <summary>
+    /// Selecting a power scheme needs no elevation.
+    /// </summary>
+    /// <remarks>
+    /// Not an assumption — measured. The active scheme lives in
+    /// <c>HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes</c>, whose ACL grants
+    /// <c>BUILTIN\Users</c> read only, so the obvious inference is that this needs admin. It does not:
+    /// <c>powercfg /setactive</c> succeeded from a standard, non-elevated interactive user on this
+    /// machine, because the call goes through the Power service rather than writing the key. Declaring
+    /// admin on the strength of the ACL would gate the row permanently for a user who can run it.
+    /// </remarks>
+    public override bool NeedsAdmin => false;
+
+    public override string TargetDescription => $"power scheme {Scheme:D}";
 }
 
 /// <summary>A single registry mutation within a catalog entry.</summary>

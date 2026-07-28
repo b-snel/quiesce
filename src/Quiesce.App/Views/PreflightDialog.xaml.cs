@@ -149,6 +149,11 @@ public sealed record PreflightRow
             return $"running at {process.PriorityClass} priority";
         }
 
+        if (step.PowerPrior is { } powerPrior)
+        {
+            return $"power plan {powerPrior.FriendlyName ?? powerPrior.Scheme.ToString("D")}";
+        }
+
         return Describe(step.Prior!);
     }
 
@@ -166,6 +171,11 @@ public sealed record PreflightRow
             return step.ProcessAction == Core.Catalog.ProcessAction.Throttle
                 ? $"priority lowered to {step.IntendedPriority}, put back on Restore"
                 : "asked to close - Restore will NOT reopen it";
+        }
+
+        if (step.PowerPrior is not null)
+        {
+            return $"power plan {step.IntendedSchemeName ?? step.IntendedScheme?.ToString("D")}, put back on Restore";
         }
 
         return $"{step.IntendedNew!.Kind} {JsonSerializer.Serialize(step.IntendedNew.Data)}";

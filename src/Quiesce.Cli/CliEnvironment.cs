@@ -81,7 +81,8 @@ internal sealed class CliEnvironment
             broadcaster,
             services,
             processes,
-            BuildProcessClassifier(processes, services));
+            BuildProcessClassifier(processes, services),
+            new Win32PowerControl());
     }
 
     /// <summary>

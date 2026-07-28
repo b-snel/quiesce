@@ -7,6 +7,7 @@ using Quiesce.Core.Platform;
 
 namespace Quiesce.Tests;
 
+[Collection(SessionGuardCollection.Name)]
 public class ServiceEngineTests : IDisposable
 {
     private readonly string _dataRoot = Path.Combine(Path.GetTempPath(), "quiesce-svc", Guid.NewGuid().ToString("N"));

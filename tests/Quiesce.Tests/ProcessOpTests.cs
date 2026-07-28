@@ -18,6 +18,7 @@ namespace Quiesce.Tests;
 /// ordering and the same conflict rules, and that the two places it genuinely cannot — a close has no
 /// undo — are visible rather than papered over.
 /// </remarks>
+[Collection(SessionGuardCollection.Name)]
 public class ProcessOpTests : IDisposable
 {
     private const string ChromeDir = @"C:\Program Files\Google\Chrome\Application\";

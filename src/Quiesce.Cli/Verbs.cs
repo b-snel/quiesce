@@ -284,6 +284,11 @@ internal static class Verbs
                     ? $"    change: priority {step.IntendedPriority} (restored on Restore)"
                     : "    change: asked to close - AND NOT REOPENED BY RESTORE");
             }
+            else if (step.PowerPrior is { } powerPrior)
+            {
+                Console.WriteLine($"    prior:  active power plan {powerPrior}");
+                Console.WriteLine($"    change: active power plan {step.IntendedSchemeName ?? step.IntendedScheme?.ToString("D")}");
+            }
             else
             {
                 Console.WriteLine($"    prior:  {DescribeProbe(step.Prior!)}");

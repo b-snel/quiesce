@@ -111,6 +111,14 @@ public sealed record PlannedRecord : JournalRecord
     [JsonPropertyName("intendedProcessAction")]
     public ProcessAction? IntendedProcessAction { get; init; }
 
+    /// <summary>The power scheme this step would select, when this step is a power op.</summary>
+    [JsonPropertyName("intendedScheme")]
+    public Guid? IntendedScheme { get; init; }
+
+    /// <summary>Human name of the scheme being selected, read live rather than taken from the catalog.</summary>
+    [JsonPropertyName("intendedSchemeName")]
+    public string? IntendedSchemeName { get; init; }
+
     [JsonPropertyName("activation")]
     public IReadOnlyList<ActivationKind> Activation { get; init; } = [];
 }
@@ -198,6 +206,24 @@ public sealed record ApplyingRecord : JournalRecord
     /// </remarks>
     [JsonPropertyName("intendedPriority")]
     public string? IntendedPriority { get; init; }
+
+    /// <summary>
+    /// The power scheme that was active before this step, when this step is a power op.
+    /// </summary>
+    /// <remarks>
+    /// The whole undo, in one GUID — and the field the revert dispatch keys on to recognise a power
+    /// step. Machine-wide rather than per-user (the active scheme lives under HKLM), so unlike a
+    /// per-user registry step this one can be reverted correctly from a SYSTEM-context recovery task
+    /// with no hive-loaded caveat and nothing to defer.
+    /// </remarks>
+    [JsonPropertyName("powerPrior")]
+    public PowerPrior? PowerPrior { get; init; }
+
+    [JsonPropertyName("intendedScheme")]
+    public Guid? IntendedScheme { get; init; }
+
+    [JsonPropertyName("intendedSchemeName")]
+    public string? IntendedSchemeName { get; init; }
 
     /// <summary>Broadcasts revert must re-issue. In the journal, not the catalog, on purpose.</summary>
     [JsonPropertyName("activation")]

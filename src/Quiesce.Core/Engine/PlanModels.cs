@@ -66,6 +66,16 @@ public sealed record PlannedStep
 
     public System.Diagnostics.ProcessPriorityClass? IntendedPriority { get; init; }
 
+    // --- power ops ----------------------------------------------------------
+
+    /// <summary>The scheme active at plan time, and the whole of this step's undo.</summary>
+    public PowerPrior? PowerPrior { get; init; }
+
+    public Guid? IntendedScheme { get; init; }
+
+    /// <summary>Live-read name of the target scheme, for the preflight list and the journal.</summary>
+    public string? IntendedSchemeName { get; init; }
+
     /// <summary>
     /// Set when a guardrail refused this step. Refused steps are shown to the user with the reason
     /// and never applied — visible refusal, not silent omission.
@@ -115,6 +125,9 @@ public sealed record AppliedStep
 
     public string? ProcessImageName { get; init; }
 
+    /// <summary>The scheme to select again. Present only for a power step.</summary>
+    public PowerPrior? PowerPrior { get; init; }
+
     /// <summary>
     /// The class to write back. Null for a close, which has no undo at all.
     /// </summary>
@@ -132,6 +145,13 @@ public sealed record AppliedStep
         StepId = step.StepId,
         Service = service,
         ServicePrior = prior,
+    };
+
+    /// <summary>A power scheme switch that was applied, and so can be rolled back.</summary>
+    public static AppliedStep ForPower(PlannedStep step, PowerPrior prior) => new()
+    {
+        StepId = step.StepId,
+        PowerPrior = prior,
     };
 
     /// <summary>
@@ -152,6 +172,22 @@ public sealed record AppliedStep
         ProcessImageName = process.ImageName,
         ProcessPriorPriority = prior,
     };
+}
+
+/// <summary>Result of applying one power scheme step.</summary>
+/// <remarks>
+/// Shaped like the service outcome rather than the process one: a scheme switch either happened or it
+/// did not, and it always round-trips exactly, so there is no third "did real work that cannot be
+/// undone" ending to model.
+/// </remarks>
+public sealed record PowerApplyOutcome
+{
+    public bool Skipped { get; init; }
+
+    /// <summary>Non-null when the step failed and its entry must roll back.</summary>
+    public string? Failure { get; init; }
+
+    public AppliedStep? Applied { get; init; }
 }
 
 /// <summary>Result of applying one service step.</summary>

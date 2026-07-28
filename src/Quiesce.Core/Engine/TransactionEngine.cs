@@ -43,7 +43,8 @@ public sealed class TransactionEngine(
     IActivationCapture? activationCapture = null,
     IServiceControl? services = null,
     IProcessControl? processes = null,
-    ProcessClassifier? processClassifier = null)
+    ProcessClassifier? processClassifier = null,
+    IPowerControl? power = null)
 {
     private readonly StateStore _state = new(paths.DataRoot);
 
@@ -122,6 +123,7 @@ public sealed class TransactionEngine(
                 {
                     RegistryOpSpec r => PlanRegistry(stepId, entry, r),
                     ServiceOpSpec s => PlanService(stepId, entry, s),
+                    PowerOpSpec p => PlanPower(stepId, entry, p),
                     _ => throw new NotSupportedException($"Unsupported op kind '{op.GetType().Name}'."),
                 });
             }
@@ -321,6 +323,105 @@ public sealed class TransactionEngine(
         return Step(before, clamped, op.StopNow, alreadyLean, refused: null);
     }
 
+    /// <summary>
+    /// Plans one power scheme selection against the live scheme list.
+    /// </summary>
+    /// <remarks>
+    /// Four outcomes, and the ordering between them is load-bearing in the same way it is in
+    /// <see cref="PlanRegistry"/>:
+    /// <list type="number">
+    /// <item>The target is not installed — a NO-OP with a reason, exactly like a service absent on this
+    /// build. Ultimate Performance really is missing on many machines.</item>
+    /// <item>It is already active — a no-op. Checked BEFORE the guardrails, because a scheme the machine
+    /// is already on needs no switch, so no switch can be refused, and announcing an RDP hazard about a
+    /// step that was never going to run would be a plain falsehood.</item>
+    /// <item>A guardrail refuses it.</item>
+    /// <item>It will run.</item>
+    /// </list>
+    /// <para>
+    /// One extra refusal has no analogue elsewhere: if the ACTIVE scheme cannot be read, the switch is
+    /// refused even though the target is fine. With no prior there is nothing to restore, and an
+    /// unrevertable change is the one thing this project will not make.
+    /// </para>
+    /// </remarks>
+    private PlannedStep PlanPower(int stepId, CatalogEntry entry, PowerOpSpec op)
+    {
+        PlannedStep Step(PowerPrior? prior, string? targetName, bool noOp, string? noOpDetail, string? refused) => new()
+        {
+            StepId = stepId,
+            EntryId = entry.Id,
+            Scope = entry.Scope,
+            Op = op,
+            Target = targetName is null
+                ? $"power scheme {op.Scheme:D}"
+                : $"power scheme {targetName}",
+            RequiresReboot = entry.RequiresReboot,
+            PowerPrior = prior,
+            IntendedScheme = op.Scheme,
+            IntendedSchemeName = targetName,
+            Activation = entry.Activation,
+            NoOp = noOp,
+            NoOpDetail = noOpDetail,
+            RefusedReason = refused,
+        };
+
+        if (power is null)
+        {
+            return Step(null, null, false, null, "Power scheme control is unavailable in this build.");
+        }
+
+        var live = power.Query();
+        var target = live.SchemeOf(op.Scheme);
+
+        // Not present on this machine. A first-class outcome, and the reason Quiesce does not create
+        // schemes: the honest answer here is "you do not have this plan", not "let me make you one".
+        if (target is null)
+        {
+            return Step(
+                null,
+                null,
+                noOp: true,
+                noOpDetail: $"power scheme {op.Scheme:D} is not installed on this machine",
+                refused: null);
+        }
+
+        if (live.Active is not { } activeId)
+        {
+            return Step(
+                null,
+                target.FriendlyName,
+                noOp: false,
+                noOpDetail: null,
+                refused: "Quiesce could not read which power scheme is active, so it has no prior to " +
+                         "restore. It will not switch a setting it cannot put back.");
+        }
+
+        var prior = new PowerPrior
+        {
+            Scheme = activeId,
+            FriendlyName = live.ActiveFriendlyName,
+            Readable = true,
+        };
+
+        // ORDER MATTERS: already-active beats refused, for the reason PlanRegistry documents at length.
+        if (activeId == op.Scheme)
+        {
+            return Step(
+                prior,
+                target.FriendlyName,
+                noOp: true,
+                noOpDetail: $"already on {target}",
+                refused: null);
+        }
+
+        if (Guardrails.RefusePowerSchemeChange(target, live.SchemeOf(activeId), SessionGuard.IsRemoteSession(), out var reason))
+        {
+            return Step(prior, target.FriendlyName, noOp: false, noOpDetail: null, refused: reason);
+        }
+
+        return Step(prior, target.FriendlyName, noOp: false, noOpDetail: null, refused: null);
+    }
+
     // -------------------------------------------------------------- Engage
 
     public EngageResult Engage(EngagePlan plan, FaultInjector fault)
@@ -369,6 +470,8 @@ public sealed class TransactionEngine(
                 IntendedNew = step.IntendedNew,
                 Process = step.ProcessBefore?.ToPrior(),
                 IntendedProcessAction = step.ProcessAction,
+                IntendedScheme = step.IntendedScheme,
+                IntendedSchemeName = step.IntendedSchemeName,
                 Activation = step.Activation,
             });
         }
@@ -433,6 +536,30 @@ public sealed class TransactionEngine(
                     // built. Deliberately NOT counted as an already-lean elision - the machine is not in
                     // the state the plan described, and the note above says which application and why.
                     skipped++;
+                    continue;
+                }
+
+                if (step.Op is PowerOpSpec powerOp)
+                {
+                    var outcome = ApplyPower(journal, revertScript, step, powerOp, fault);
+
+                    if (outcome.Skipped)
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    if (outcome.Failure is { } powerFailure)
+                    {
+                        RollBackEntry(journal, entryGroup.Key, appliedInEntry, outcome.Applied, powerFailure);
+                        rolledBackEntries.Add(entryGroup.Key);
+                        diagnoses[entryGroup.Key] = powerFailure;
+                        entryFailed = true;
+                        break;
+                    }
+
+                    appliedInEntry.Add(outcome.Applied!);
+                    applied++;
                     continue;
                 }
 
@@ -763,6 +890,225 @@ public sealed class TransactionEngine(
             AppliedWithoutUndo = true,
             Note = $"closed {live.ImageName} (pid {live.Identity.Pid}). Restore will not reopen it.",
         };
+    }
+
+    /// <summary>
+    /// Applies one power scheme step: journal the prior scheme, select the new one, verify by re-reading.
+    /// </summary>
+    /// <remarks>
+    /// The simplest apply in the engine, and the only one whose undo is guaranteed exact — one GUID in,
+    /// one GUID out. The discipline is still the same as everywhere else: re-read at apply time rather
+    /// than trusting the plan-time capture, write the prior to disk before touching anything, and verify
+    /// by asking the system what the active scheme is now rather than by believing the call's return code.
+    /// <para>
+    /// That last point is not ceremony here. <c>PowerSetActiveScheme</c> returns a Win32 error code where
+    /// every sibling API in this project returns a BOOL, so "it did not throw" and "it worked" are
+    /// especially far apart — and a scheme switch is exactly the kind of change a user cannot see happen.
+    /// </para>
+    /// </remarks>
+    private PowerApplyOutcome ApplyPower(
+        JournalWriter journal,
+        RevertScriptWriter revertScript,
+        PlannedStep step,
+        PowerOpSpec op,
+        FaultInjector fault)
+    {
+        if (power is null)
+        {
+            return new PowerApplyOutcome { Failure = "Power scheme control is unavailable in this build." };
+        }
+
+        // Re-read: the user may have changed schemes between the preflight dialog and the apply, and the
+        // prior that goes in the journal has to be the one the switch actually replaced.
+        var live = power.Query();
+
+        var target = live.SchemeOf(op.Scheme);
+        if (target is null)
+        {
+            return new PowerApplyOutcome { Skipped = true };
+        }
+
+        if (live.Active is not { } activeId)
+        {
+            return new PowerApplyOutcome
+            {
+                Failure = "Could not read the active power scheme, so there is no prior to restore. " +
+                          "Quiesce will not switch a setting it cannot put back.",
+            };
+        }
+
+        if (activeId == op.Scheme)
+        {
+            return new PowerApplyOutcome { Skipped = true };
+        }
+
+        // Re-checked immediately before the mutation, not merely at plan time. A user can connect over
+        // RDP while the preflight dialog is open, which would turn a locally-harmless scheme into one
+        // that can sleep the machine out from under a live remote session.
+        if (Guardrails.RefusePowerSchemeChange(target, live.SchemeOf(activeId), SessionGuard.IsRemoteSession(), out var refusal))
+        {
+            return new PowerApplyOutcome { Failure = refusal };
+        }
+
+        var prior = new PowerPrior
+        {
+            Scheme = activeId,
+            FriendlyName = live.ActiveFriendlyName,
+            Readable = true,
+        };
+
+        journal.Append(new ApplyingRecord
+        {
+            StepId = step.StepId,
+            EntryId = step.EntryId,
+            Scope = step.Scope,
+            Target = step.Target,
+            RequiresReboot = step.RequiresReboot,
+            PowerPrior = prior,
+            IntendedScheme = op.Scheme,
+            IntendedSchemeName = target.FriendlyName,
+            Activation = step.Activation,
+        });
+
+        revertScript.AppendPowerInverse(step.StepId, prior);
+
+        try
+        {
+            power.SetActiveScheme(op.Scheme);
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or UnauthorizedAccessException)
+        {
+            journal.Append(new AppliedRecord { StepId = step.StepId, Verify = $"PowerFailed: {ex.Message}" });
+            return new PowerApplyOutcome { Failure = $"PowerFailed: {ex.Message}" };
+        }
+
+        var after = power.Query();
+        var ok = after.Active == op.Scheme;
+
+        journal.Append(new AppliedRecord
+        {
+            StepId = step.StepId,
+            Verify = ok ? "ok" : $"mismatch: active={DescribeActive(after)}",
+        });
+
+        if (!ok)
+        {
+            return new PowerApplyOutcome
+            {
+                Failure = $"Verification failed: the active scheme is {DescribeActive(after)} " +
+                          $"rather than {op.Scheme:D}.",
+
+                // Handed to the rollback even though the switch did not verify: the call may have
+                // partially taken effect, so the failing step has to be unwound with the rest.
+                Applied = AppliedStep.ForPower(step, prior),
+            };
+        }
+
+        fault.AfterStepApplied(step.StepId);
+
+        return new PowerApplyOutcome { Applied = AppliedStep.ForPower(step, prior) };
+    }
+
+    /// <summary>
+    /// Reverts one journalled power step: put the previously active scheme back.
+    /// </summary>
+    /// <remarks>
+    /// Same conflict rule as every other kind. If the active scheme is no longer the one Quiesce
+    /// selected, the user (or something else) has changed it since, and overwriting that with the stale
+    /// capture would throw away a choice Quiesce did not make.
+    /// <para>
+    /// Note what is deliberately NOT here: no reboot special-case. A service that was running before a
+    /// reboot must not be force-started afterwards, because the SCM has already decided what runs — but
+    /// the active power scheme is a single machine-wide setting that survives the reboot unchanged, so
+    /// restoring it across one is exactly as correct as restoring it within one.
+    /// </para>
+    /// <para>
+    /// Also note there is no Power saver exception. The guardrail forbids <em>selecting</em> Power saver;
+    /// putting it back is the correct undo for a user who had it, and a guardrail applied here would
+    /// strand them on whatever Quiesce switched them to.
+    /// </para>
+    /// </remarks>
+    private void RevertPowerStep(
+        JournalWriter journal,
+        ApplyingRecord step,
+        PowerPrior prior,
+        List<string> messages,
+        ref int reverted,
+        ref int failed)
+    {
+        if (power is null)
+        {
+            messages.Add($"step {step.StepId} (power scheme): power control unavailable; cannot revert.");
+            failed++;
+            return;
+        }
+
+        if (!prior.Readable)
+        {
+            // Only reachable from a journal written by a build that recorded an unreadable prior. Counted
+            // as failed rather than skipped: something was changed and this record cannot say back to what.
+            messages.Add(
+                $"step {step.StepId} (power scheme): the journal records that the previous scheme could " +
+                "not be read, so Quiesce cannot say what to restore. Choose your power plan in Windows.");
+            failed++;
+            return;
+        }
+
+        try
+        {
+            var live = power.Query();
+
+            if (live.Active is { } activeId
+                && step.IntendedScheme is { } intended
+                && activeId != intended
+                && activeId != prior.Scheme)
+            {
+                messages.Add(
+                    $"step {step.StepId} (power scheme): the active plan changed since apply " +
+                    $"(now {DescribeActive(live)}); kept it rather than overwriting your choice.");
+                journal.Append(new RevertedRecord { StepId = step.StepId, Outcome = "conflict-kept-current" });
+                reverted++;
+                return;
+            }
+
+            if (live.Active == prior.Scheme)
+            {
+                journal.Append(new RevertedRecord { StepId = step.StepId, Outcome = "restored-nothing-to-do" });
+                reverted++;
+                return;
+            }
+
+            // The scheme genuinely no longer exists - deleted by the user or by a driver package since
+            // apply. Nothing to select, and inventing a substitute would be worse than saying so.
+            if (!live.Contains(prior.Scheme))
+            {
+                messages.Add(
+                    $"step {step.StepId} (power scheme): the plan you were on ({prior}) no longer exists " +
+                    "on this machine, so Quiesce cannot select it again. Pick a power plan in Windows.");
+                failed++;
+                return;
+            }
+
+            power.SetActiveScheme(prior.Scheme);
+
+            var after = power.Query();
+            if (after.Active != prior.Scheme)
+            {
+                messages.Add(
+                    $"step {step.StepId} (power scheme): asked Windows to go back to {prior}, but the " +
+                    $"active plan is still {DescribeActive(after)}.");
+                failed++;
+                return;
+            }
+
+            journal.Append(new RevertedRecord { StepId = step.StepId, Outcome = "restored" });
+            reverted++;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or UnauthorizedAccessException)
+        {
+            messages.Add($"step {step.StepId} (power scheme): revert failed: {ex.Message}");
+            failed++;
+        }
     }
 
     /// <summary>
@@ -1151,6 +1497,26 @@ public sealed class TransactionEngine(
             }
         }
 
+        if (applied.PowerPrior is { } powerPrior && power is not null)
+        {
+            // Reported rather than discarded, for the reason RestoreService's comment sets out: this is
+            // the mid-apply unwind path, and a power plan left on the lean scheme while the entry is
+            // reported rolled back is residue the user cannot see and would never think to check.
+            try
+            {
+                power.SetActiveScheme(powerPrior.Scheme);
+
+                if (power.Query().Active != powerPrior.Scheme)
+                {
+                    return $"the power plan is still not back to {powerPrior}";
+                }
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or UnauthorizedAccessException)
+            {
+                return $"could not put the power plan back to {powerPrior} ({ex.Message})";
+            }
+        }
+
         // A throttle is the only process work that has an inverse. A close never reaches here at all -
         // ApplyProcess deliberately returns no AppliedStep for one - so there is no branch to write.
         if (applied.Process is { } identity && applied.ProcessPriorPriority is { } priorPriority)
@@ -1299,13 +1665,24 @@ public sealed class TransactionEngine(
         // not read by anything else — and it puts the one kind of step that cannot fully round-trip at the
         // end of the report, where the caveats belong.
         var ordered = pending
-            .OrderBy(s => s.Service is not null ? 0 : s.Process is not null ? 2 : 1)
+            .OrderBy(s => s.Service is not null || s.PowerPrior is not null ? 0 : s.Process is not null ? 2 : 1)
             .ThenByDescending(s => s.StepId)
             .ToList();
 
         foreach (var step in ordered)
         {
             var revertedBefore = reverted;
+
+            if (step.PowerPrior is { } powerPrior)
+            {
+                RevertPowerStep(journal, step, powerPrior, messages, ref reverted, ref failed);
+                if (step.RequiresReboot && reverted > revertedBefore)
+                {
+                    rebootEntries.Add(step.EntryId);
+                }
+
+                continue;
+            }
 
             if (step.Service is { } serviceName)
             {
@@ -1332,7 +1709,7 @@ public sealed class TransactionEngine(
             var registryTarget = step.RegistryTarget;
             if (registryTarget is null || step.Prior is null)
             {
-                messages.Add($"step {step.StepId}: journal record carries neither a registry nor a service target; skipped.");
+                messages.Add($"step {step.StepId}: journal record carries no registry, service, process or power target; skipped.");
                 failed++;
                 continue;
             }
@@ -1733,6 +2110,19 @@ public sealed class TransactionEngine(
             .Where(g => g != Guid.Empty)
             .OrderByDescending(g => Directory.GetCreationTimeUtc(paths.SessionDir(g)));
     }
+
+    /// <summary>
+    /// Names the active scheme for a message, degrading to the GUID and then to "unreadable".
+    /// </summary>
+    /// <remarks>
+    /// "unreadable" rather than an empty string or "none": the difference between "the machine is on no
+    /// power plan" (impossible) and "Quiesce could not find out" (routine, and the condition under which
+    /// it refuses to act at all) is the whole point of the distinction.
+    /// </remarks>
+    private static string DescribeActive(PowerSchemeSnapshot snapshot) =>
+        snapshot.Active is { } id
+            ? snapshot.NameOf(id) ?? id.ToString("D")
+            : "unreadable";
 
     private static string Describe(RegistryProbe probe) => probe.Presence switch
     {

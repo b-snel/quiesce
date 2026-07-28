@@ -178,6 +178,44 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   task firing. And whether Explorer honours an approval value Quiesce wrote rather than one Task Manager
   wrote is **reasoned, not measured**; nothing in the format carries provenance, but confirming it needs a
   sign-out.
+- **M6** — **Power plans: a fourth op kind, and the smallest undo in the app.** Catalog v0.7.0 adds
+  `power.ultimate-performance`, which selects the Ultimate Performance scheme for the session and puts your
+  own plan back on Restore. The prior is a **single GUID**, because the op deliberately only *selects* among
+  schemes that already exist: it never creates, duplicates, deletes, renames or edits one, and it never writes
+  an individual setting index. A scheme Quiesce created would be a scheme Restore was obliged to delete, and
+  an op that edited settings would have to capture 58 AC/DC pairs to undo itself honestly.
+  <br>**Measured, and smaller than the internet claims.** A full 58-setting diff of Balanced against Ultimate
+  Performance on the development machine found exactly **8** differences — and the two that tweak guides lead
+  with are not among them: minimum processor state is 0% on AC in *both* plans there and maximum is 100% in
+  both, so this does **not** pin the CPU at 100%, and the entry says so. What actually changes: PCIe link state
+  power management Moderate → Off (the one plausibly latency-relevant item), the AMD power slider and switchable
+  graphics to their top settings, sleep 5 h → never, disk park 20 min → never, display-off 5 min → 15 min, and a
+  brightness value that is inert on a desktop. `impact: Low`, `evidence: Situational` — the settings are
+  measured, the frame-time benefit is not. The diff is also machine-specific: Ultimate Performance is an
+  ordinary editable scheme, so Quiesce reports what it selected and does not audit the contents.
+  <br>**A scheme that is not installed is a no-op with a reason**, exactly like a service absent on this build —
+  Windows hides Ultimate Performance on many machines. `requiresAdmin: false`, and that is measured rather than
+  assumed: `powercfg /setactive` succeeds from a standard, non-elevated interactive user even though the
+  `ActivePowerScheme` value it lands in grants `BUILTIN\Users` read-only, because the call goes through the
+  Power service. Declaring admin on the strength of the ACL would have gated the row for everyone who can run it.
+  <br>Written through `PowerSetActiveScheme` rather than as a registry op even though the active scheme really
+  does live in the registry — writing that value directly leaves the running Power service on the old scheme,
+  so the tweak would verify green while nothing had changed until a restart. Same reasoning as using
+  `ChangeServiceConfig` instead of writing the SCM's `Start` value. It is also why this is the one op kind with
+  no activation broadcast.
+  <br>**Session scope here earns its keep in a way a throttle's does not.** An active power scheme is
+  machine-wide state under HKLM that *survives a reboot*, so without boot recovery a machine that crashed while
+  engaged would sit on the lean plan indefinitely. Tested.
+- **M6** — **New guardrail: a power plan can disconnect you over RDP, and nothing else could see it.** Every
+  remote-session guardrail in Quiesce is keyed on *service names*; a scheme whose "sleep after" is shorter than
+  the current one reaches the identical outcome — operator disconnected, no way back in, physical access
+  required — without touching a service at all. While any session is remote, Quiesce now refuses a scheme that
+  sleeps sooner than the one in force, and refuses one whose timeout it could not read. Zero means *never*, so
+  it is handled explicitly rather than compared numerically: as an integer it is smaller than every real
+  timeout, and the naive comparison would refuse precisely the scheme that removes the hazard. There is a test
+  whose only job is to stop that bug coming back. Also: **Power saver is on a never-*select* list** — the
+  asymmetry is deliberate and tested, because Restore must still put it back for a user who had it, and a
+  guardrail applied in both directions would strand them.
 
 ### Hardening (from the M4 adversarial guardrail review)
 

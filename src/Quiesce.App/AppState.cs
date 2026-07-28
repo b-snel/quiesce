@@ -198,7 +198,8 @@ public sealed record AppState
             Quiesce.Core.ProcessClassifier.ForMachine(
                 processes,
                 gameDirectories: null,
-                serviceHostPids: services.ServiceHostProcessIds()));
+                serviceHostPids: services.ServiceHostProcessIds()),
+            new Win32PowerControl());
     }
 
     /// <summary>

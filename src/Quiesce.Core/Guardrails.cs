@@ -274,6 +274,104 @@ public static class Guardrails
     }
 
     /// <summary>
+    /// Power schemes Quiesce will never SELECT, whatever a catalog asks for.
+    /// </summary>
+    /// <remarks>
+    /// Power saver only, and the direction is everything: Quiesce refuses to <em>engage</em> it because
+    /// choosing it would make the machine slower, which is a straight inversion of what this tool
+    /// claims to do. Restore may still put it back — if that is what the user had active, it is their
+    /// setting and returning it is the correct undo. A guardrail applied symmetrically here would trap
+    /// a Power saver user's machine on whatever Quiesce switched them to, which is exactly the failure
+    /// this project exists to avoid.
+    /// </remarks>
+    public static readonly IReadOnlySet<Guid> NeverSelectPowerSchemes = new HashSet<Guid>
+    {
+        WellKnownPowerSchemes.PowerSaver,
+    };
+
+    /// <summary>
+    /// Decides whether a power scheme may be selected.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two rules, from two different places. The first is the compile-time refusal above. The second is
+    /// a live-state check that exists because of a hazard nothing else in this file can see: every RDP
+    /// guardrail in Quiesce is keyed on SERVICE NAMES, and a power scheme reaches the same outcome —
+    /// operator disconnected, no way back in, physical access required — without touching a service at
+    /// all. A scheme whose "sleep after" is shorter than the current one's can put the machine to sleep
+    /// under a live remote session.
+    /// </para>
+    /// <para>
+    /// Unknown counts as refused. A scheme whose sleep timeout could not be read gets declined while a
+    /// session is remote, because "I cannot tell whether this would drop your connection" is not a
+    /// reason to proceed. Locally there is nothing at stake and the check does not apply — worst case
+    /// the screen goes to sleep and the user moves the mouse.
+    /// </para>
+    /// <para>
+    /// Note the asymmetry with <paramref name="current"/>: never-sleeps is always allowed, and any
+    /// timeout at all is allowed as long as it is not sooner than what the machine is already set to.
+    /// The rule is "do not make the disconnection risk worse", not "forbid sleep".
+    /// </para>
+    /// </remarks>
+    /// <returns>True when the switch must be refused; <paramref name="reason"/> explains why.</returns>
+    public static bool RefusePowerSchemeChange(
+        PowerScheme target,
+        PowerScheme? current,
+        bool isRemoteSession,
+        out string reason)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+
+        if (NeverSelectPowerSchemes.Contains(target.Id))
+        {
+            reason =
+                $"{target} makes the machine slower on purpose. Quiesce will never select it — though " +
+                "Restore will put it back if it is what you had.";
+            return true;
+        }
+
+        if (!isRemoteSession)
+        {
+            reason = string.Empty;
+            return false;
+        }
+
+        if (target.SleepAfterAcSeconds is not { } targetSleep)
+        {
+            reason =
+                $"Quiesce could not read how soon {target} puts the machine to sleep, and you are " +
+                "connected over a remote session. It will not switch to a scheme that might sleep the " +
+                "machine out from under you.";
+            return true;
+        }
+
+        // Zero is "never", which is the safest possible value and must not be compared numerically -
+        // as an integer it is smaller than every real timeout, so a naive "<" would refuse exactly the
+        // scheme that removes the hazard. This is the shape of bug that makes a guardrail look broken
+        // and get deleted.
+        if (targetSleep == 0)
+        {
+            reason = string.Empty;
+            return false;
+        }
+
+        var currentSleep = current?.SleepAfterAcSeconds;
+
+        if (currentSleep is null || currentSleep == 0 || targetSleep < currentSleep)
+        {
+            reason =
+                $"{target} sleeps the machine after {targetSleep}s on AC power" +
+                (currentSleep is { } c && c != 0 ? $", sooner than the current {c}s" : ", and the current scheme does not sleep at all") +
+                ". You are connected over a remote session, and a machine that sleeps disconnects you " +
+                "with no way back in.";
+            return true;
+        }
+
+        reason = string.Empty;
+        return false;
+    }
+
+    /// <summary>
     /// Services that carry a remote session. Stopping one over RDP severs the operator's only
     /// control channel — on the target machine there is no Ethernet, so recovery needs physical
     /// access to the box.

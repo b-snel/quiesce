@@ -110,6 +110,7 @@ public static class CatalogLoader
             }
 
             ValidateProcessEntryShape(entry, Fail);
+            ValidatePowerEntryShape(entry, Fail);
 
             foreach (var op in entry.Ops)
             {
@@ -122,6 +123,12 @@ public static class CatalogLoader
                 if (op is ProcessOpSpec processOp)
                 {
                     ValidateProcess(processOp, Fail);
+                    continue;
+                }
+
+                if (op is PowerOpSpec powerOp)
+                {
+                    ValidatePower(powerOp, Fail);
                     continue;
                 }
 
@@ -181,6 +188,67 @@ public static class CatalogLoader
         {
             Fail("declares requiresAdmin: true, but closing or throttling a process in your own session " +
                  "needs no elevation.");
+        }
+    }
+
+    /// <summary>
+    /// Entry-level rules for power ops: two claims a power-only entry must not make.
+    /// </summary>
+    /// <remarks>
+    /// Both are honesty checks rather than safety checks, and both are here because this project has
+    /// already shipped each mistake once. Over-declaring <c>requiresAdmin</c> gates a row permanently
+    /// for a user who could run it (the process ops carry the same rule for the same reason), and a
+    /// wrong <c>requiresReboot</c> sends the user to restart a machine that is already in the state
+    /// they asked for — which is the bug the reboot-pending banner was built on top of.
+    /// <para>
+    /// Scope is deliberately NOT constrained. Process ops are forced to Session because nothing they do
+    /// survives a reboot, but the active power scheme genuinely does, so a Persistent power entry would
+    /// mean something coherent: a standing preference. Session is merely what the shipped entry wants.
+    /// </para>
+    /// </remarks>
+    private static void ValidatePowerEntryShape(CatalogEntry entry, Action<string> Fail)
+    {
+        var powerOps = entry.Ops.OfType<PowerOpSpec>().ToList();
+        if (powerOps.Count == 0 || powerOps.Count != entry.Ops.Count)
+        {
+            return;
+        }
+
+        if (entry.RequiresAdmin)
+        {
+            Fail("declares requiresAdmin: true, but selecting a power scheme does not need elevation — " +
+                 "measured on a standard interactive user. Claiming it would gate the row for people " +
+                 "who can run it.");
+        }
+
+        if (entry.RequiresReboot)
+        {
+            Fail("declares requiresReboot: true, but a power scheme takes effect the moment it is " +
+                 "selected. The warning would send the user to restart for nothing.");
+        }
+
+        if (powerOps.Count > 1)
+        {
+            Fail("contains more than one power op. Only one scheme can be active, so a second op would " +
+                 "silently overwrite the first and the journalled prior would describe a state the " +
+                 "machine was never in.");
+        }
+    }
+
+    private static void ValidatePower(PowerOpSpec op, Action<string> Fail)
+    {
+        if (op.Scheme == Guid.Empty)
+        {
+            Fail("power op has no scheme GUID.");
+            return;
+        }
+
+        // Data narrows, never widens. A catalog - shipped by anyone, including a future me - must not be
+        // able to talk Quiesce into selecting a scheme that makes the machine slower.
+        if (Guardrails.NeverSelectPowerSchemes.Contains(op.Scheme))
+        {
+            Fail($"power scheme {op.Scheme:D} is one Quiesce will never select and cannot appear in a " +
+                 "catalog. Restore may still put it back if the user had it active.");
         }
     }
 

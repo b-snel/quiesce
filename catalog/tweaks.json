@@ -1,6 +1,6 @@
 ﻿{
     "schemaVersion":  1,
-    "catalogVersion":  "0.6.0",
+    "catalogVersion":  "0.7.0",
     "entries":  [
                     {
                         "id":  "privacy.diagnostic-data-off",
@@ -903,6 +903,32 @@
                                        ],
                         "whatItBreaks":  "Nothing. Game Mode on is what Windows already does by default, so on a machine where nobody turned it off this entry changes no behaviour at all - it only makes the setting explicit so it cannot drift. Settings > Gaming > Game Mode will show the toggle On. Restore DELETES the value rather than writing 0, which returns the machine to the default-on state it was in; writing 0 would turn Game Mode off, which is the opposite of where it started.",
                         "notes":  "THE ONLY ENTRY IN THIS CATALOG THAT ASSERTS A SETTING ON RATHER THAN MAKING THE MACHINE LEANER. Added on an explicit product decision: Quiesce should assert Game Mode rather than assume it. It is a consistency guarantee, not a performance claim - impact is None on purpose, and the evidence that Game Mode itself helps is genuinely mixed, which is why nothing here claims it does. ABSENT MEANS ENABLED. Measured on the development machine: AutoGameModeEnabled is absent and Game Mode is therefore on, so applying this writes a value and changes nothing observable - Quiesce will report one change applied, and that report is about the registry, not about behaviour. The entry earns its place on the machine where something HAS set it to 0. CAUTION, same weakness as gaming.gamedvr-policy-lock: expectedKind DWord comes from Microsoft documentation and the Settings UI, NOT from observation. The value is absent here and absent in every loaded user hive, so GetValueKind could not be used and the loader's kind check cannot protect it. If the kind is wrong the write silently no-ops and Quiesce reports success. Circumstantial corroboration only: the sibling value GamepadDoublePressIntervalMs in the same key is REG_DWORD. Isolated in its own single-op entry so that this cannot poison anything else. AllowAutoGameMode is deliberately NOT written: its semantics and its kind are both unverified, and doubling the unverified surface for no measured benefit is how a catalog starts lying. The GameBar key already exists here (it holds GamepadDoublePressIntervalMs), so Quiesce creates no key and has none to clean up. Persistent scope because it is a standing preference, and because a Session-scoped assertion would be auto-reverted by boot recovery - undoing the very guarantee it exists to make."
+                    },
+                    {
+                        "id":  "power.ultimate-performance",
+                        "category":  "power",
+                        "title":  "Switch to the Ultimate Performance power plan",
+                        "evidence":  "Situational",
+                        "impact":  "Low",
+                        "riskTier":  1,
+                        "scope":  "Session",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "power",
+                                        "scheme":  "e9a42b02-d5df-448d-aa00-03f14749eb61"
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "THE MACHINE STOPS SLEEPING while engaged, and the disks stop spinning down. On the development machine Balanced sleeps after 5 hours on AC and parks the hard disks after 20 minutes; Ultimate Performance does neither, so an idle PC now stays fully awake and drawing power until Restore. The display still turns off, but after 15 minutes instead of 5. If you rely on the PC sleeping by itself, this is the one thing here you will actually notice. Restore selects your previous plan again, and nothing about the plans themselves is edited, so your own customisations survive untouched. If Ultimate Performance is not installed on your machine - Windows hides it on many systems - this reports 'not installed' and does nothing; Quiesce will NOT create it.",
+                        "notes":  "MEASURED, AND SMALLER THAN THE INTERNET CLAIMS. A full 58-setting diff of both plans on the development machine (AMD Ryzen 7 9800X3D, desktop, no battery) found exactly 8 differences, and the two that tweak guides lead with are NOT among them: minimum processor state is 0% on AC in BOTH plans here, and maximum is 100% in both, so this does NOT pin the CPU at 100% and nothing in this entry claims it does. What actually changes on AC: PCI Express link state power management goes from Moderate to Off (the one plausibly latency-relevant item - ASPM adds wake latency to the GPU and NVMe links); the AMD power slider goes from Better Performance to Best Performance; switchable dynamic graphics goes to Maximize Performance; sleep-after 18000s to never; disk park 1200s to never; display-off 300s to 900s; and display brightness 75 to 100, which is inert on a desktop driving external monitors. That is the honest list, and it is why impact is Low and evidence is Situational rather than Measured - the settings are measured, the frame-time benefit is not. THE DIFF IS MACHINE-SPECIFIC: Ultimate Performance is an ordinary scheme that OEMs, drivers and users can all edit, so on another machine it may differ from Balanced in more ways, fewer ways, or none. Quiesce selects it and reports what it did; it does not audit the contents. Session scope, and unlike a throttle this one genuinely needs boot recovery: an active power scheme is a machine-wide setting under HKLM that SURVIVES A REBOOT, so a machine that crashed while engaged would stay on the lean plan indefinitely without it. requiresAdmin is false because it measurably is: powercfg /setactive succeeded from a standard, non-elevated interactive user here, even though the ActivePowerScheme value it lands in grants BUILTIN\\Users read-only - the call goes through the Power service, not the registry. GUARDRAIL: while you are connected over a remote session, Quiesce refuses any plan that sleeps sooner than the current one, because a machine that sleeps disconnects you with no way back in. Ultimate Performance never sleeps, so it passes; the check exists because every other RDP guardrail in Quiesce is keyed on service names and could not see this hazard at all."
                     },
                     {
                         "id":  "svc.inventory-appraisal",
