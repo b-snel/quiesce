@@ -180,6 +180,41 @@ public sealed record ProcessPrior
     public string? PriorityClass { get; init; }
 
     public ProcessIdentity ToIdentity() => new() { Pid = Pid, CreatedUtcTicks = CreatedUtcTicks };
+
+    /// <summary>
+    /// Whether <paramref name="live"/> is the same program this record describes, started again.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// NOT the same instance — deliberately the opposite question from <see cref="ToIdentity"/>. A
+    /// relaunched application has a new PID and a new creation time, so
+    /// <c>Query(prior.ToIdentity()).Present</c> is false for it forever. That is correct for a revert,
+    /// which must never write a captured priority onto a process that merely inherited the number, and it
+    /// is exactly why an application coming back after Quiesce closed it is invisible to the journal: there
+    /// was no question the journal could ask that would notice.
+    /// </para>
+    /// <para>
+    /// FULL IMAGE PATH, case-insensitive, and never the image name alone. The recorded path is the
+    /// strongest fact the journal holds about what was closed, and a program with the same name somewhere
+    /// else on disk is not the one Quiesce closed — the same rule
+    /// <see cref="Catalog.ProcessOpSpec.Matches"/> enforces, for the same reason, and the reason this
+    /// stays a journal-only comparison rather than reaching for the catalog: a revert must work from the
+    /// records alone, and so must anything that decides what a revert will later have to undo.
+    /// </para>
+    /// <para>
+    /// An unreadable path on either side is never a match. A close whose target could not be pathed should
+    /// not have happened, and a live process whose path cannot be read is one Quiesce cannot identify — in
+    /// both directions the answer to "is this the same program" is "cannot say", which must resolve to no.
+    /// </para>
+    /// </remarks>
+    public bool IsSameProgram(ProcessSnapshot live)
+    {
+        ArgumentNullException.ThrowIfNull(live);
+
+        return !string.IsNullOrWhiteSpace(ImagePath)
+            && !string.IsNullOrWhiteSpace(live.ImagePath)
+            && ImagePath.Equals(live.ImagePath, StringComparison.OrdinalIgnoreCase);
+    }
 }
 
 /// <summary>How a close attempt ended.</summary>

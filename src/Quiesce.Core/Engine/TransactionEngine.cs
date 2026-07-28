@@ -1780,9 +1780,14 @@ public sealed class TransactionEngine(
             try
             {
                 var live = registry.Probe(registryTarget);
-                var liveMatchesIntended = live.Presence == RegPresence.ValuePresent
-                    && live.Value is not null
-                    && live.Value.DataEquals(step.IntendedNew!);
+
+                // The same predicate the drift detector uses, shared rather than restated. This one
+                // expression is genuinely identical in both places, so it is extracted; the service, power
+                // and throttle conflict tests below ask a DIFFERENT question - "did a third party change
+                // it", which also compares against the prior - and are deliberately left alone rather than
+                // bent into a shape they do not have. What keeps those four honest instead is
+                // Drift_and_revert_agree_about_a_changed_value.
+                var liveMatchesIntended = RegistryHoldsIntended(live, step);
 
                 string outcome;
                 if (!liveMatchesIntended && live.Presence == RegPresence.ValuePresent)
@@ -2019,6 +2024,414 @@ public sealed class TransactionEngine(
         };
     }
 
+    // -------------------------------------------------------------- Drift
+
+    /// <summary>
+    /// Compares what a session applied against what the machine holds now. Changes nothing.
+    /// </summary>
+    /// <param name="live">
+    /// A process enumeration to reuse. Omit and one is taken; supply the one the caller already has.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// Reads the JOURNAL, not the catalog and not a fresh <c>Plan</c> — see <see cref="DriftReport"/> for
+    /// the three cases where a plan-derived answer is wrong. Every comparison is against the
+    /// <c>Intended*</c> fields of the <c>applying</c> records, which is what "as Quiesce left it" means.
+    /// </para>
+    /// <para>
+    /// Read-only by construction: it probes, queries and enumerates, and writes nothing anywhere. It is
+    /// therefore safe to call on a timer, from a tray menu, or twice at once — none of which it does.
+    /// </para>
+    /// </remarks>
+    public DriftReport DetectDrift(Guid sessionId, IReadOnlyList<ProcessSnapshot>? live = null)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var journalPath = Path.Combine(paths.SessionDir(sessionId), "journal.jsonl");
+
+        // Unknown, never "in sync". The data root is hardened to Administrators, so an unelevated caller
+        // gets an exception here rather than an answer - and reporting no drift for "could not look" is the
+        // File.Exists trap in a new place.
+        JournalReadResult read;
+        try
+        {
+            read = JournalReader.Read(journalPath);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException
+                                      or UnauthorizedAccessException or System.Security.SecurityException
+                                      or JournalFormatException or System.Text.Json.JsonException)
+        {
+            return new DriftReport
+            {
+                SessionId = sessionId,
+                Items = [],
+                Unknown = true,
+                UnknownReason = $"Quiesce could not read this session's journal, so it cannot tell whether the " +
+                                $"machine still matches it: {ex.Message}",
+                AppliedBeforeLastRestart = false,
+                CheckedUtc = now,
+            };
+        }
+
+        var rebooted = read.Records.OfType<SessionStartRecord>().FirstOrDefault() is { } start
+            && !QuiescePaths.IsSameBoot(start.BootId);
+
+        var pending = PendingSteps(read.Records);
+        var items = new List<DriftItem>();
+
+        // One enumeration for the whole report, taken only if some pending step actually needs it. Doing it
+        // per step would let two process steps disagree about what was running.
+        var liveProcesses = live
+            ?? (pending.Any(s => s.Process is not null) && processes is not null ? processes.Enumerate() : []);
+
+        foreach (var step in pending)
+        {
+            // Dispatched in the same order as revert, and on the same fields, so the two cannot disagree
+            // about which KIND a record is even if they disagree about its state.
+            if (step.PowerPrior is not null)
+            {
+                AddPowerDrift(step, items);
+            }
+            else if (step.Service is not null)
+            {
+                AddServiceDrift(step, items);
+            }
+            else if (step.Process is not null)
+            {
+                AddProcessDrift(step, liveProcesses, rebooted, items);
+            }
+            else if (step.RegistryTarget is not null && step.IntendedNew is not null)
+            {
+                AddRegistryDrift(step, items);
+            }
+        }
+
+        return new DriftReport
+        {
+            SessionId = sessionId,
+            Items = GroupReturnedProcesses(items),
+            Unknown = false,
+            AppliedBeforeLastRestart = rebooted,
+            CheckedUtc = now,
+        };
+    }
+
+    /// <summary>
+    /// Whether the live probe holds what the step intended to write. The drift predicate for registry.
+    /// </summary>
+    /// <remarks>
+    /// Shared verbatim with <c>RevertSession</c>'s conflict test, which is the one of the four where the
+    /// expression really is identical. Kept private static and passed the record rather than the value so
+    /// there is exactly one place that knows a registry step's intent is <c>IntendedNew</c>.
+    /// </remarks>
+    private static bool RegistryHoldsIntended(RegistryProbe live, ApplyingRecord step) =>
+        live.Presence == RegPresence.ValuePresent
+        && live.Value is not null
+        && step.IntendedNew is not null
+        && live.Value.DataEquals(step.IntendedNew);
+
+    private void AddRegistryDrift(ApplyingRecord step, List<DriftItem> items)
+    {
+        // HKU steps for a hive that is not loaded are not drift - the other user is simply not signed in,
+        // and revert already defers them for the same reason.
+        if (step.RegistryTarget is { Hive: "HKU", UserSid: { } sid } && !registry.UserHiveLoaded(sid))
+        {
+            return;
+        }
+
+        RegistryProbe probe;
+        try
+        {
+            probe = registry.Probe(step.RegistryTarget!);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        if (RegistryHoldsIntended(probe, step))
+        {
+            return;
+        }
+
+        items.Add(new DriftItem
+        {
+            StepId = step.StepId,
+            EntryId = step.EntryId,
+            Target = step.Target,
+            Kind = DriftKind.RegistryChanged,
+            Detail = $"now {Describe(probe)}, and Quiesce wrote {DescribeData(step.IntendedNew!)}.",
+            Resyncable = false,
+            NotResyncableReason = NotResyncable.ChangedValue,
+        });
+    }
+
+    private void AddServiceDrift(ApplyingRecord step, List<DriftItem> items)
+    {
+        if (services is null)
+        {
+            return;
+        }
+
+        ServiceSnapshot snapshot;
+        try
+        {
+            snapshot = services.Query(step.Service!);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        if (!snapshot.Present)
+        {
+            return;
+        }
+
+        // Start type first: it is the part that persists, and a service whose start type was changed under
+        // Quiesce is a different situation from one that simply got started again.
+        if (step.IntendedStartType is { } intendedStart && snapshot.StartType != intendedStart)
+        {
+            items.Add(new DriftItem
+            {
+                StepId = step.StepId,
+                EntryId = step.EntryId,
+                Target = step.Target,
+                Kind = DriftKind.ServiceReconfigured,
+                Detail = $"start type is now {snapshot.StartType}, and Quiesce set {intendedStart}.",
+                Resyncable = false,
+                NotResyncableReason = NotResyncable.ChangedValue,
+            });
+
+            return;
+        }
+
+        // The documented case, and the reason this whole feature has a service arm:
+        // catalog/tweaks.json says of svc.lghub-updater "IT WILL NOT NECESSARILY STAY STOPPED, AND THAT IS
+        // NOT QUIESCE FAILING" - its security descriptor grants SERVICE_START to Everyone, so opening
+        // G HUB starts it again. Until now that was a caveat in a description. It is now a state.
+        if (step.IntendedStop == true && snapshot.RunState == ServiceRunState.Running)
+        {
+            items.Add(new DriftItem
+            {
+                StepId = step.StepId,
+                EntryId = step.EntryId,
+                Target = step.Target,
+                Kind = DriftKind.ServiceRunning,
+                Detail = "it is running again. Its start type is still what Quiesce set, so Windows did not " +
+                         "start it — something asked it to.",
+                Resyncable = false,
+                NotResyncableReason = NotResyncable.RunningService,
+            });
+        }
+    }
+
+    private void AddPowerDrift(ApplyingRecord step, List<DriftItem> items)
+    {
+        if (power is null || step.IntendedScheme is not { } intended)
+        {
+            return;
+        }
+
+        PowerSchemeSnapshot snapshot;
+        try
+        {
+            snapshot = power.Query();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        if (snapshot.Active is not { } active || active == intended)
+        {
+            return;
+        }
+
+        items.Add(new DriftItem
+        {
+            StepId = step.StepId,
+            EntryId = step.EntryId,
+            Target = step.Target,
+            Kind = DriftKind.PowerSchemeChanged,
+            Detail = $"the active plan is now {snapshot.NameOf(active) ?? active.ToString("D")}, and Quiesce " +
+                     $"selected {step.IntendedSchemeName ?? intended.ToString("D")}.",
+            Resyncable = false,
+            NotResyncableReason = NotResyncable.ChangedValue,
+        });
+    }
+
+    private void AddProcessDrift(
+        ApplyingRecord step,
+        IReadOnlyList<ProcessSnapshot> liveProcesses,
+        bool rebooted,
+        List<DriftItem> items)
+    {
+        var prior = step.Process!;
+
+        if (step.IntendedProcessAction == ProcessAction.Close)
+        {
+            // The instance Quiesce closed is gone forever - a new one has a different CreatedUtcTicks - so
+            // the question is not "is it present" but "is the same PROGRAM running again".
+            var returned = liveProcesses.Where(prior.IsSameProgram).ToList();
+            if (returned.Count == 0)
+            {
+                return;
+            }
+
+            items.Add(new DriftItem
+            {
+                StepId = step.StepId,
+                EntryId = step.EntryId,
+                Target = step.Target,
+                Kind = DriftKind.ProcessReturned,
+                Detail = string.Empty, // filled in by the grouping pass, which knows the whole count
+                Resyncable = !rebooted,
+                NotResyncableReason = rebooted ? NotResyncable.BeforeRestart : null,
+                RecordedProcess = prior,
+                LiveProcesses = returned,
+            });
+
+            return;
+        }
+
+        // A throttle. Two different situations, and they need different words.
+        var same = processes?.Query(prior.ToIdentity());
+
+        if (same is { Present: true })
+        {
+            if (step.IntendedPriority is { } intendedName
+                && Enum.TryParse<System.Diagnostics.ProcessPriorityClass>(intendedName, ignoreCase: true, out var intended)
+                && same.PriorityClass != intended)
+            {
+                items.Add(new DriftItem
+                {
+                    StepId = step.StepId,
+                    EntryId = step.EntryId,
+                    Target = step.Target,
+                    Kind = DriftKind.ThrottleChanged,
+                    Detail = $"it is running at {same.PriorityClass}, and Quiesce set {intended}. This is the " +
+                             "same process Quiesce throttled, so something changed it since.",
+                    Resyncable = false,
+                    NotResyncableReason = NotResyncable.ChangedValue,
+                    RecordedProcess = prior,
+                });
+            }
+
+            return;
+        }
+
+        // The throttled instance is gone. If the same program is back, the new instance is at whatever
+        // priority Windows gave it, and the journal has no record covering it - which is precisely why this
+        // one IS resyncable: re-throttling captures a prior for an instance nothing has captured yet.
+        var restarted = liveProcesses.Where(prior.IsSameProgram).ToList();
+        if (restarted.Count == 0)
+        {
+            return;
+        }
+
+        items.Add(new DriftItem
+        {
+            StepId = step.StepId,
+            EntryId = step.EntryId,
+            Target = step.Target,
+            Kind = DriftKind.ProcessRestarted,
+            Detail = string.Empty,
+            Resyncable = !rebooted,
+            NotResyncableReason = rebooted ? NotResyncable.BeforeRestart : null,
+            RecordedProcess = prior,
+            LiveProcesses = restarted,
+        });
+    }
+
+    /// <summary>
+    /// Collapses per-instance process items into one item per program, and writes their detail.
+    /// </summary>
+    /// <remarks>
+    /// A close journals one step per process instance, so the measured Comet on this machine produced
+    /// nineteen. Nineteen drift items for one reopened browser is accurate and useless. Grouped by the
+    /// RECORDED image path, which is the same key <see cref="ProcessPrior.IsSameProgram"/> compares on, so
+    /// the group and the match cannot disagree.
+    /// </remarks>
+    private static IReadOnlyList<DriftItem> GroupReturnedProcesses(List<DriftItem> items)
+    {
+        static bool IsPerInstance(DriftItem item) =>
+            item.Kind is DriftKind.ProcessReturned or DriftKind.ProcessRestarted;
+
+        // Everything else passes through untouched: one registry value, one service and one power plan are
+        // each already one fact per journal step.
+        var result = items.Where(i => !IsPerInstance(i)).ToList();
+
+        var processGroups = items
+            .Where(IsPerInstance)
+            .GroupBy(i => (i.Kind, i.RecordedProcess?.ImagePath ?? string.Empty), TupleComparer);
+
+        foreach (var group in processGroups)
+        {
+            var first = group.OrderBy(i => i.StepId).First();
+
+            // Distinct by identity: several journalled instances of one program all match the same live
+            // process set, so a naive concat would count each live process once per closed instance.
+            var liveSet = group
+                .SelectMany(i => i.LiveProcesses)
+                .GroupBy(p => p.Identity)
+                .Select(g => g.First())
+                .ToList();
+
+            var closedCount = group.Count();
+            var name = first.RecordedProcess?.ImageName ?? "it";
+
+            var detail = first.Kind == DriftKind.ProcessReturned
+                ? $"{name}.exe is running again — {Plural(liveSet.Count, "process", "processes")} now, and " +
+                  $"Quiesce closed {Plural(closedCount, "process", "processes")} when it engaged."
+                : $"{name}.exe restarted, so {Plural(liveSet.Count, "process", "processes")} " +
+                  $"{(liveSet.Count == 1 ? "is" : "are")} back at full priority.";
+
+            result.Add(first with { LiveProcesses = liveSet, Detail = detail });
+        }
+
+        return result;
+    }
+
+    private static string Plural(int count, string one, string many) =>
+        count == 1 ? $"1 {one}" : $"{count} {many}";
+
+    private static readonly TupleKeyComparer TupleComparer = new();
+
+    /// <summary>Case-insensitive on the path half, because Windows paths are.</summary>
+    private sealed class TupleKeyComparer : IEqualityComparer<(DriftKind Kind, string Path)>
+    {
+        public bool Equals((DriftKind Kind, string Path) x, (DriftKind Kind, string Path) y) =>
+            x.Kind == y.Kind && string.Equals(x.Path, y.Path, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((DriftKind Kind, string Path) obj) =>
+            HashCode.Combine(obj.Kind, obj.Path.ToLowerInvariant());
+    }
+
+    /// <summary>
+    /// The reasons Quiesce will not resync something, worded once.
+    /// </summary>
+    /// <remarks>
+    /// Shared strings rather than inline ones because these sentences must not contradict what Restore
+    /// prints for the same situation. Restore already refuses to overwrite a value changed since apply and
+    /// says "kept current"; a Resync that silently overwrote it would make the two halves of the product
+    /// disagree about who owns the value.
+    /// </remarks>
+    private static class NotResyncable
+    {
+        public const string ChangedValue =
+            "Quiesce will not put this back. Something changed it after Engage, and overwriting a value " +
+            "Quiesce did not set is not its call — Restore keeps your value here too, for the same reason.";
+
+        public const string RunningService =
+            "Quiesce will not stop it again. Stopping a service a second time inside one session cannot " +
+            "record a new prior without making the first one unreliable, so Restore would no longer know " +
+            "what to put back. Restore and Engage again if you want it stopped.";
+
+        public const string BeforeRestart =
+            "This session was applied before the last restart, so what it closed is not what is running " +
+            "now — these came back because you signed in, not because the machine drifted.";
+    }
+
     // ------------------------------------------------------------- Helpers
 
     /// <summary>
@@ -2206,4 +2619,13 @@ public sealed class TransactionEngine(
         RegPresence.KeyAbsent => "<key absent>",
         _ => "<?>",
     };
+
+    /// <summary>
+    /// The intended value, rendered the same way <see cref="Describe(RegistryProbe)"/> renders a live one.
+    /// </summary>
+    /// <remarks>
+    /// Same serializer on both sides so a drift message reads as a comparison rather than as two
+    /// differently-formatted values that may or may not be the same thing.
+    /// </remarks>
+    private static string DescribeData(RegistryData data) => JsonSerializer.Serialize(data);
 }
