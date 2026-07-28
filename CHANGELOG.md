@@ -102,8 +102,78 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   machine are configured with REBOOT at 30–120s. The false version was easy to disprove, and
   disproving it would have got the check deleted.
 
+### Verified on real hardware
+
+- **M4** — **The elevated acceptance run passed.** 24 registry entries, 5 rounds, no drift; then 8 service
+  entries, 5 rounds, no drift. This is the first time any service was actually stopped or reconfigured —
+  every earlier check ran against fakes and the real *read* APIs. Start type, delayed-auto flag and run
+  state all came back exactly: the four `Automatic (delayed)` services kept their flag, the five with no
+  such value still have none, and `MapsBroker` was correctly left Stopped rather than started.
+- **M4** — `svc.print-spooler` is deliberately **not** covered. The development machine reaches Windows over
+  RDP, and the redirected printer lives in Spooler's store — stopping it drops the queue until the session
+  reconnects. Verified by doing it accidentally. It needs a local-console run.
+
+### Added
+
+- **M4** — **Plan-time refusal of registry writes Windows vetoes in the kernel.** `UCPD.sys` (the User
+  Choice Protection Driver) registers a `CmRegisterCallbackEx` callback and denies `RegNtPreSetValueKey`
+  for an exact, case-insensitive *(key path, value name)* pair. It sits downstream of the security check,
+  so opening the key with `KEY_SET_VALUE` succeeds and the refusal only arrives at the write — no ACL can
+  produce that, because security descriptors attach to keys, not to value names. Quiesce now declines
+  these before touching anything, showing the reason. Gated on the driver actually running, so a tweak
+  returns on its own if Microsoft drops the pair. Two pairs measured on build 26200.8875
+  (`Dsh!AllowNewsAndInterests`, `Explorer\Advanced!TaskbarDa`), three more listed from the same driver
+  table and marked as unmeasured.
+- **M4** — Already-lean beats refused in the plan. A value that already holds the target data needs no
+  write, so no write can be refused, and "Windows blocks this" about a step that was never going to run is
+  simply untrue. `TaskbarDa` is both vetoed *and* already lean here, so the wrong order would turn a
+  healthy row into an alarming one.
+
 ### Fixed
 
+- **M4** — **A refused write left the machine unrevertable, forever.** The vetoed value was never created,
+  so the captured prior was "absent" — and revert then tried to *delete* the absent value, which the same
+  callback also refuses. The session reported `machine still DIRTY` over a value that had never changed,
+  and no retry could ever clear it because every retry performed the same forbidden no-op. Restore now
+  checks whether the end state already holds before mutating, which is also what finally makes revert
+  idempotent rather than merely documented as such.
+- **M4** — **A refused write crashed the caller mid-apply.** `SetValue` throwing was caught and turned into
+  a typed diagnosis, but the *entry rollback* then re-wrote a prior that had never changed, was refused in
+  turn, and let that exception escape `Engage`. So "a refused write is an outcome, not a crash" only ever
+  held for the forward write. An existing test had been pinning the escaping exception as if it were the
+  intended behaviour.
+- **M4** — **An empty key Quiesce cannot delete is residue, not a failed revert.** `SetValue` calls
+  `CreateSubKey` before writing, so a vetoed write still creates the key — and Quiesce was then refused
+  permission to remove the empty key it had just made. That wedged the session permanently. It is now
+  reported as `restored-with-residue` and named out loud, because residue nobody mentions is how a tool
+  ends up having changed a machine it called clean.
+- **M4** — A refused write reported *"the tweak may need elevation, or may be locked by policy or Tamper
+  Protection"* while discarding the actual exception — on a run that was demonstrably elevated, with seven
+  sibling HKLM policy writes succeeding in the same session. The diagnosis now carries the real message and
+  HRESULT and branches on the live elevation state instead of guessing. A diagnosis that cannot be
+  falsified is not a diagnosis.
+- **M4** — **`scripts/baseline-diff.ps1` could not run elevated at all**, which is to say it could never
+  exercise the service path it existed to test. Ops have been polymorphic on `kind` since M4 and a service
+  op carries no subkey, so all nine resolved to the path `HKCU:\` — the whole user hive — and the run died
+  on the first volatile key that vanished mid-enumeration. Invisible unelevated, because every service
+  entry is `requiresAdmin` and got filtered out first.
+- **M4** — The diff had **no service coverage** in the service milestone. It now watches each candidate's
+  own key recursively (so `Start` and `DelayedAutostart` are covered byte-exactly, catching the
+  materialization case) plus run state from the SCM, and **fails** naming any service that engage did not
+  move. Twenty-four registry entries applying is more than enough to keep an aggregate change count
+  healthy while all nine service steps quietly did nothing.
+- **M4** — The diff **deleted its own journal and `revert.cmd` on failure** — the one run that leaves the
+  machine dirty had its only means of recovery removed on the way out. Cleanup now happens only on success,
+  and `-FaultInject` exists so that path is tested rather than assumed.
+- **M4** — `-Skip a,b` silently filtered **nothing** when invoked as `powershell -File` from cmd.exe, which
+  takes the remaining arguments as literal strings: the parameter bound as one element and matched no entry
+  id. A run meant to cover 23 entries covered all 33 and stopped nine services on an RDP machine. Now
+  splits inside each element, echoes the filters **as parsed** with a removal count, and hard-errors on a
+  prefix matching no entry id anywhere in the catalog.
+- **M4** — A no-op engage was a **warning printed underneath a green `PASS`**. If the machine is already
+  engaged, the baseline captures the applied state and "restore returned it to baseline" compares that
+  state against itself — trivially byte-identical, five rounds running, testing nothing. It now fails the
+  round, and a preflight refuses to start while any journal has applied records without a `revertComplete`.
 - **M4** — **Ordering bug found in review:** the start type was written before the service was
   stopped. Disabling a service does not stop it, so a stop that then timed out would leave the
   machine `Disabled + Running` — correct-looking for the whole session, after which the service
