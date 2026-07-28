@@ -280,10 +280,11 @@ public class ViewConstructionTests
     }
 
     [Fact]
-    public void Engage_and_restore_are_disabled_in_the_read_only_shell()
+    public void Engage_and_restore_are_both_refused_with_no_catalog_and_nothing_engaged()
     {
-        // M2 has no mutation path. If these ever become enabled without the M3 engine wiring,
-        // the button would silently do nothing - worse than being visibly disabled.
+        // Engage needs a catalog to have anything to apply; Restore needs something to undo. CleanState
+        // has neither, so both are off - and a button that is enabled with nothing behind it would
+        // silently do nothing, which is worse than being visibly disabled.
         //
         // The assertion runs INSIDE the STA thread: WPF DependencyObjects have thread affinity, so
         // reading IsEnabled from the test thread throws "a different thread owns it".
@@ -295,6 +296,46 @@ public class ViewConstructionTests
 
         Assert.False(engage);
         Assert.False(restore);
+    }
+
+    [Fact]
+    public void Engage_stays_refused_and_restore_stays_offered_when_the_state_is_unreadable()
+    {
+        // The regression this pins is specific and was live: Render() and SetBusy() each computed the
+        // two button states from their own copy of the expression, and each copy had dropped a
+        // different clause. SetBusy re-enabled Engage in the UNKNOWN case - engaging over a machine
+        // that may already be engaged captures the first session's tweaks as if they were the user's
+        // original settings, and UNKNOWN is the one case the engine cannot refuse because it never gets
+        // a chance to run - and it disabled Restore in the same case, which is the one action whose
+        // worst outcome is finding nothing to undo.
+        //
+        // So the assertion is deliberately made TWICE: once as constructed, and again after a
+        // busy/not-busy cycle, because passing the first and failing the second is exactly the shape
+        // the bug had.
+        var unknown = new AppState
+        {
+            MachineState = new QuiesceState(),
+            DataRoot = @"C:\ProgramData\Quiesce",
+            StateUnknown = true,
+            LoadError = "state.json could not be read",
+        };
+
+        var (afterRender, afterBusyCycle) = OnStaThread(() =>
+        {
+            var page = new DashboardPage(unknown);
+            var rendered = (page.EngageButton.IsEnabled, page.RestoreButton.IsEnabled);
+
+            page.SetBusy(true);
+            page.SetBusy(false);
+
+            return (rendered, (page.EngageButton.IsEnabled, page.RestoreButton.IsEnabled));
+        });
+
+        Assert.False(afterRender.Item1);
+        Assert.True(afterRender.Item2);
+
+        Assert.False(afterBusyCycle.Item1);
+        Assert.True(afterBusyCycle.Item2);
     }
 
     [Fact]

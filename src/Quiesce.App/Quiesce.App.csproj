@@ -15,6 +15,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- The pages expose the controls a test needs with x:FieldModifier="public", but a decision that
+         is not a control - which brush, which headline, which tray items, whether a button is enabled
+         after a busy cycle - has nowhere to be asserted from without this. Kept internal rather than
+         made public for the same reason Core does it: the test seam should not widen the API. -->
+    <InternalsVisibleTo Include="Quiesce.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- 512px logos for in-app use (About page, tray). The .ico is the dark logo at
          16/24/32/48/64/128/256 - the glowing rings read on both light and dark taskbars. -->
     <Resource Include="Assets\logo-dark.png" />
