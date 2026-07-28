@@ -72,7 +72,9 @@ internal static class Verbs
         {
             if (step.NoOp)
             {
-                Console.WriteLine($"  step {step.StepId}  SKIP (already lean)  {step.Target}");
+                // The reason, when there is one. "Already lean" is right for a registry value that
+                // already holds the target; it is nonsense for a process group with nothing running.
+                Console.WriteLine($"  step {step.StepId}  SKIP ({step.NoOpDetail ?? "already lean"})  {step.Target}");
                 continue;
             }
 
@@ -95,6 +97,13 @@ internal static class Verbs
                     $"    change: startType={step.IntendedStartType}" +
                     (step.IntendedStop ? ", stop now" : ", leave running"));
             }
+            else if (step.ProcessBefore is { } process)
+            {
+                Console.WriteLine($"    prior:  priority {process.PriorityClass}, {process.ImagePath ?? "<path unreadable>"}");
+                Console.WriteLine(step.ProcessAction == Core.Catalog.ProcessAction.Throttle
+                    ? $"    change: priority {step.IntendedPriority} (restored on Restore)"
+                    : "    change: asked to close - AND NOT REOPENED BY RESTORE");
+            }
             else
             {
                 Console.WriteLine($"    prior:  {DescribeProbe(step.Prior!)}");
@@ -114,10 +123,25 @@ internal static class Verbs
         {
             Console.WriteLine();
             Console.WriteLine($"REFUSED by guardrails ({refused.Count}) — these will not be attempted:");
-            foreach (var step in refused)
+
+            // Grouped by reason, because a process group refuses per process and the counts get large:
+            // the application hosting a development run has fourteen processes, all refused for the same
+            // reason, and fourteen identical paragraphs bury the one line that matters.
+            foreach (var group in refused.GroupBy(s => (s.EntryId, s.RefusedReason)))
             {
-                Console.WriteLine($"  {step.Target}  [{step.EntryId}]");
-                Console.WriteLine($"    {step.RefusedReason}");
+                var targets = group.Select(s => s.Target).ToList();
+                Console.WriteLine($"  [{group.Key.EntryId}] {targets.Count} step(s)");
+                foreach (var target in targets.Take(3))
+                {
+                    Console.WriteLine($"    {target}");
+                }
+
+                if (targets.Count > 3)
+                {
+                    Console.WriteLine($"    ... and {targets.Count - 3} more, same reason");
+                }
+
+                Console.WriteLine($"    {group.Key.RefusedReason}");
             }
         }
 
@@ -170,6 +194,15 @@ internal static class Verbs
 
             Console.WriteLine($"engaged: session {result.SessionId:D}");
             Console.WriteLine($"  applied {result.Applied}, skipped {result.SkippedNoop} already-lean");
+
+            // Printed before the rollbacks, because this is where "Quiesce closed something and will not
+            // bring it back" is said. It is the one consequence the undo does not cover, so it does not
+            // get to be a footnote.
+            foreach (var note in result.Notes)
+            {
+                Console.WriteLine($"  note: {note}");
+            }
+
             foreach (var entry in result.RolledBackEntries)
             {
                 var why = result.Diagnoses.TryGetValue(entry, out var d) ? d : "verification failed";
@@ -241,7 +274,34 @@ internal static class Verbs
         var engine = env.CreateEngine();
         var registry = new Win32Registry();
 
-        var plan = engine.Plan(catalog, "default", new ProfileStore(env.Paths.DataRoot).ActiveEnabled());
+        // Entries that close applications are excluded from this verb outright, and the exclusion is
+        // reported. This is a round-trip assertion: it engages, immediately reverts, and demands the
+        // machine be byte-identical afterwards. A close cannot satisfy that by construction - there is no
+        // undo - so including one would mean closing the operator's browser in order to assert something
+        // meaningless about it. Enabled entries are otherwise untouched, so the run still covers
+        // everything that CAN round-trip, and says what it left out.
+        var enabled = new ProfileStore(env.Paths.DataRoot).ActiveEnabled();
+        var irreversible = catalog.Entries
+            .Where(e => enabled.Contains(e.Id)
+                && e.Ops.OfType<Core.Catalog.ProcessOpSpec>().Any(op => op.Action == Core.Catalog.ProcessAction.Close))
+            .Select(e => e.Id)
+            .ToList();
+
+        if (irreversible.Count > 0)
+        {
+            Console.WriteLine(
+                $"verify-revert: excluding {irreversible.Count} entr{(irreversible.Count == 1 ? "y" : "ies")} " +
+                "that close applications — a closed application cannot be reopened, so a round-trip " +
+                "assertion over it would be meaningless (and would cost you the application):");
+            foreach (var id in irreversible)
+            {
+                Console.WriteLine($"  {id}");
+            }
+        }
+
+        var tested = enabled.Where(id => !irreversible.Contains(id, StringComparer.OrdinalIgnoreCase)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var plan = engine.Plan(catalog, "default", tested);
         var mutations = plan.EffectiveSteps.ToList();
 
         if (mutations.Count == 0)

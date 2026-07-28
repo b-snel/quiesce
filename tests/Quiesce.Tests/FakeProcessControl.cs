@@ -72,6 +72,7 @@ public sealed class FakeProcessControl : IProcessControl
             return ProcessCloseResult.NoWindow;
         }
 
+        BeforeClose?.Invoke();
         CloseLog.Add($"close {found.ImageName} ({identity.Pid})");
 
         if (RefuseToExit.Contains(identity.Pid))
@@ -90,6 +91,15 @@ public sealed class FakeProcessControl : IProcessControl
 
     public List<string> PriorityLog { get; } = [];
 
+    /// <summary>
+    /// Runs immediately before a priority write lands, so a test can inspect the world as it was at that
+    /// instant. Exists to prove the write-ahead ordering: the journal must already describe the change.
+    /// </summary>
+    public Action? BeforePriorityWrite { get; set; }
+
+    /// <summary>Runs immediately before a close request is delivered, for the same reason.</summary>
+    public Action? BeforeClose { get; set; }
+
     public bool TrySetPriority(ProcessIdentity identity, ProcessPriorityClass priority, out string diagnosis)
     {
         if (!_byPid.TryGetValue(identity.Pid, out var found)
@@ -99,6 +109,7 @@ public sealed class FakeProcessControl : IProcessControl
             return false;
         }
 
+        BeforePriorityWrite?.Invoke();
         PriorityLog.Add($"priority {found.ImageName} ({identity.Pid}) {found.PriorityClass} -> {priority}");
 
         if (IgnorePriorityWrites.Contains(identity.Pid))

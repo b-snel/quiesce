@@ -61,8 +61,13 @@ public partial class FeaturesPage
             var someRefused = steps.Any(s => s.RefusedReason is not null);
             var refusalReason = steps.FirstOrDefault(s => s.RefusedReason is not null)?.RefusedReason;
 
+            // "Already at its lean value" is right for a registry or service row and wrong for a process
+            // group, which elides because nothing it names is running. The step says which it is.
+            var elision = steps.FirstOrDefault(s => s.NoOp && s.NoOpDetail is not null)?.NoOpDetail
+                ?? "already at its lean value";
+
             var status = !isEnabled ? "off — not applied, and Engage will skip it"
-                : applied ? "on — already at its lean value"
+                : applied ? $"on — {elision}"
                 : refused ? "on — REFUSED: Windows will not permit this on this machine"
                 : someRefused ? "on — PARTIALLY refused; the rest will be applied on Engage"
                 : partial ? "on — PARTIALLY applied"

@@ -56,7 +56,22 @@ public sealed class ProcessThrottler
     /// <summary>
     /// Lowers one process to <paramref name="target"/>, capturing what it was first.
     /// </summary>
-    public ProcessThrottleOutcome Throttle(ProcessIdentity identity, ProcessPriorityClass target)
+    /// <param name="beforeWrite">
+    /// Invoked with the captured prior class immediately before the write, and only when a write is
+    /// actually going to happen.
+    /// </param>
+    /// <remarks>
+    /// <paramref name="beforeWrite"/> is the write-ahead hook. The engine must make the prior durable
+    /// before the mutation, and the prior is read here — so without a hook the engine would have to read
+    /// the priority itself, journal that, and then let this method read it a second time. Two reads means
+    /// two answers are possible, and the one the journal recorded would not be the one the write raced
+    /// against. The registry and service paths avoid this only because the engine performs those writes
+    /// itself; this gives the process path the same guarantee.
+    /// </remarks>
+    public ProcessThrottleOutcome Throttle(
+        ProcessIdentity identity,
+        ProcessPriorityClass target,
+        Action<ProcessPriorityClass>? beforeWrite = null)
     {
         ArgumentNullException.ThrowIfNull(identity);
 
@@ -66,7 +81,7 @@ public sealed class ProcessThrottler
             return Fail(identity, live, "no longer running");
         }
 
-        if (Refuse(live, target, out var reason))
+        if (WouldRefuse(live, target, out var reason))
         {
             return Fail(identity, live, reason);
         }
@@ -89,6 +104,8 @@ public sealed class ProcessThrottler
         }
 
         var prior = live.PriorityClass;
+
+        beforeWrite?.Invoke(prior);
 
         if (!_processes.TrySetPriority(identity, target, out var diagnosis))
         {
@@ -150,6 +167,20 @@ public sealed class ProcessThrottler
             };
         }
 
+        // The one thing restore will not do. Throttle refuses to lower a process from above the ceiling
+        // for exactly this reason, so a journal written by this build cannot ask for it - but a journal
+        // is a file on disk that outlives the build that wrote it, and "restore whatever the record says"
+        // would make an edited record an arbitrary-priority primitive. Not a permanent wedge either: the
+        // step reverts cleanly the moment the process exits, which also clears the throttle.
+        if (!CanRestore(prior))
+        {
+            return Fail(
+                identity,
+                live,
+                $"the recorded prior class {prior} is above the {Guardrails.MaxAssignablePriority} ceiling " +
+                "Quiesce will never assign. Restart the process to clear the throttle.");
+        }
+
         if (!_processes.TrySetPriority(identity, prior, out var diagnosis))
         {
             return Fail(identity, live, diagnosis);
@@ -166,8 +197,18 @@ public sealed class ProcessThrottler
         };
     }
 
-    private bool Refuse(ProcessSnapshot live, ProcessPriorityClass target, out string reason)
+    /// <summary>
+    /// Decides whether this process may be throttled to <paramref name="target"/>, and says why not.
+    /// </summary>
+    /// <remarks>
+    /// Public so the plan can ask without writing anything, and so the reason the preflight list shows is
+    /// produced by the code that will act rather than by a second copy of the rule that could drift from
+    /// it. <see cref="Throttle"/> calls it again on a freshly re-read snapshot.
+    /// </remarks>
+    public bool WouldRefuse(ProcessSnapshot live, ProcessPriorityClass target, out string reason)
     {
+        ArgumentNullException.ThrowIfNull(live);
+
         var cls = _classifier.Classify(live);
 
         if (cls is not (ProcessClass.Ordinary or ProcessClass.Browser))
@@ -186,6 +227,21 @@ public sealed class ProcessThrottler
                 _ => $"{live.ImageName} is not in a class Quiesce will throttle.",
             };
 
+            return true;
+        }
+
+        // Do not create an obligation that cannot be discharged. A process already above the ceiling -
+        // realtime, in practice - could be lowered perfectly well, and then restore would have to write
+        // that class back. Quiesce will not: BannedSymbols makes the realtime class unnameable in this
+        // codebase precisely because assigning it starves the compositor and the audio graph, and a
+        // restore is still an assignment. Refusing the throttle is the only answer that leaves the
+        // machine recoverable, and it is the same rule Restore relies on - see the remarks there.
+        if (!CanRestore(live.PriorityClass))
+        {
+            reason =
+                $"{live.ImageName} is running at a priority class above the {Guardrails.MaxAssignablePriority} " +
+                "ceiling. Quiesce could lower it but would then have to raise it back past its own ceiling " +
+                "to restore it, so it leaves the process alone instead.";
             return true;
         }
 
@@ -245,6 +301,38 @@ public sealed class ProcessThrottler
         ProcessPriorityClass.AboveNormal => 3,
         ProcessPriorityClass.High => 4,
         _ => int.MaxValue,
+    };
+
+    /// <summary>
+    /// True when <paramref name="priority"/> is a class Quiesce is able to write back.
+    /// </summary>
+    /// <remarks>
+    /// Exactly the classes the rank table names, which is what makes the rule self-maintaining: a class
+    /// added by a future Windows release ranks highest and so is not restorable, without this needing to
+    /// know what it was.
+    /// </remarks>
+    public static bool CanRestore(ProcessPriorityClass priority) => Rank(priority) != int.MaxValue;
+
+    /// <summary>
+    /// True when <paramref name="current"/> is already at or below <paramref name="target"/>, so a
+    /// throttle to that target has nothing to do.
+    /// </summary>
+    /// <remarks>
+    /// Public because the plan needs it, and it must be asked BEFORE the refusal check. "Already lower
+    /// than asked" and "would be a raise" are the same condition — a process at Idle is both already
+    /// throttled and impossible to move to BelowNormal without raising it — and only the first is a true
+    /// description. Getting this backwards reported every already-throttled process as a guardrail
+    /// refusal, which is precisely the mistake the registry path already documents in reverse.
+    /// </remarks>
+    public static bool IsAtOrBelow(ProcessPriorityClass current, ProcessPriorityClass target) =>
+        Rank(current) <= Rank(target);
+
+    /// <summary>Maps a catalog throttle level onto the priority class it names.</summary>
+    public static ProcessPriorityClass ToPriorityClass(Catalog.ThrottleLevel level) => level switch
+    {
+        Catalog.ThrottleLevel.BelowNormal => ProcessPriorityClass.BelowNormal,
+        Catalog.ThrottleLevel.Idle => ProcessPriorityClass.Idle,
+        _ => throw new ArgumentOutOfRangeException(nameof(level), level, "Unknown throttle level."),
     };
 
     private bool AnyGameRunning(out string gameName)

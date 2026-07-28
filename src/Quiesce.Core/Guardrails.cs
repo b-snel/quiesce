@@ -440,12 +440,24 @@ public static class Guardrails
     /// path under a plausible install root — see <see cref="ProcessClassifier"/>. The name alone is
     /// not enough: anything can be called <c>chrome.exe</c>.
     /// </para>
+    /// <para>
+    /// This list is deliberately WIDER than the catalog's browser group, and the two are not meant to
+    /// converge. This decides what Quiesce is <em>willing</em> to treat as a browser; the catalog decides
+    /// which ones it actually looks for, and pairs each with the directory its real installation lives
+    /// under. Data narrowing a compile-time list is the intended direction.
+    /// </para>
+    /// <para>
+    /// <c>tor</c> was here and has been removed: <c>tor.exe</c> is the SOCKS daemon, not the browser.
+    /// Tor Browser's UI process is <c>firefox.exe</c> under <c>\Tor Browser\</c>. Calling the daemon a
+    /// browser was simply wrong — and acting on that name would have cut the browser's networking out
+    /// from under a window left standing, which is a worse outcome than closing the browser.
+    /// </para>
     /// </remarks>
     public static readonly IReadOnlySet<string> BrowserImageNames =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "chrome", "msedge", "firefox", "brave", "opera", "opera_gx", "vivaldi", "chromium",
-            "librewolf", "waterfox", "tor",
+            "librewolf", "waterfox",
         };
 
     /// <summary>True when <paramref name="imageName"/> names a browser, with or without <c>.exe</c>.</summary>

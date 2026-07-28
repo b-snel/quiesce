@@ -58,7 +58,7 @@ public sealed class ProcessCloser
             };
         }
 
-        if (Refuse(live, out var reason))
+        if (WouldRefuse(live, out var reason))
         {
             return new ProcessCloseOutcome
             {
@@ -83,16 +83,34 @@ public sealed class ProcessCloser
     }
 
     /// <summary>
-    /// Decides whether this process may be closed at all, re-read live.
+    /// Decides whether this process may be closed at all, and says why not.
     /// </summary>
-    private bool Refuse(ProcessSnapshot live, out string reason)
+    /// <remarks>
+    /// Public so the plan can ask the question without mutating anything. Closing has no dry run — asking
+    /// <em>is</em> the action — so a plan that wanted to show the user "this one will be declined, and
+    /// here is the reason" would otherwise have to reimplement this rule, and the copy would drift.
+    /// <see cref="Close"/> calls it again on a freshly re-read snapshot, because the gap between planning
+    /// and acting is exactly where a game gets launched.
+    /// </remarks>
+    public bool WouldRefuse(ProcessSnapshot live, out string reason)
     {
+        ArgumentNullException.ThrowIfNull(live);
+
         var cls = _classifier.Classify(live);
 
         if (cls is not (ProcessClass.Ordinary or ProcessClass.Browser))
         {
             reason = cls switch
             {
+                // Added when a process group first made this reachable from the catalog: the class existed
+                // and the throttler explained it properly, but this switch had no arm for it, so the
+                // refusal fell through to the generic "not in a class Quiesce will close". The whole point
+                // of giving self-protection its own class is that the user gets the true reason, and a
+                // generic one here reads like the app being arbitrary rather than the app protecting the
+                // process driving the change.
+                ProcessClass.SelfOrLauncherOfSelf =>
+                    $"{live.ImageName} is Quiesce itself or part of what launched it. Closing it would kill " +
+                    "the process performing this change and strand the journal mid-apply.",
                 ProcessClass.NeverTouch =>
                     $"{live.ImageName} is on the never-touch list, or its identity could not be " +
                     "established well enough to act on safely.",

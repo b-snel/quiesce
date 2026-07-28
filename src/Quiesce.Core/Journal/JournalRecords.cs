@@ -100,6 +100,13 @@ public sealed record PlannedRecord : JournalRecord
     [JsonPropertyName("intendedStop")]
     public bool? IntendedStop { get; init; }
 
+    /// <summary>Process being closed or throttled, when this step is a process op.</summary>
+    [JsonPropertyName("process")]
+    public ProcessPrior? Process { get; init; }
+
+    [JsonPropertyName("intendedProcessAction")]
+    public ProcessAction? IntendedProcessAction { get; init; }
+
     [JsonPropertyName("activation")]
     public IReadOnlyList<ActivationKind> Activation { get; init; } = [];
 }
@@ -123,8 +130,8 @@ public sealed record ApplyingRecord : JournalRecord
     [JsonPropertyName("target")]
     public required string Target { get; init; }
 
-    // Exactly one of the registry or service pair is populated, decided by the op kind. Kept as
-    // concrete optional fields rather than a polymorphic union because the revert binary must be
+    // Exactly one of the registry, service or process groups is populated, decided by the op kind. Kept
+    // as concrete optional fields rather than a polymorphic union because the revert binary must be
     // able to read old journals for as long as they exist on disk, and adding a field is a
     // backward-compatible change in a way that re-shaping one is not.
 
@@ -149,6 +156,32 @@ public sealed record ApplyingRecord : JournalRecord
 
     [JsonPropertyName("intendedStop")]
     public bool? IntendedStop { get; init; }
+
+    /// <summary>
+    /// The process, its instance identity and its priority class before Quiesce touched it.
+    /// </summary>
+    /// <remarks>
+    /// For a throttle this is the undo. For a close it is the record of what was closed, which the
+    /// revert reports and does not reverse — Restore lists closed applications and leaves reopening them
+    /// to the user, because relaunching one would mean guessing its command line and, for a browser,
+    /// would restore the process without the tabs.
+    /// </remarks>
+    [JsonPropertyName("process")]
+    public ProcessPrior? Process { get; init; }
+
+    [JsonPropertyName("intendedProcessAction")]
+    public ProcessAction? IntendedProcessAction { get; init; }
+
+    /// <summary>
+    /// The class a throttle wrote, as .NET spells it.
+    /// </summary>
+    /// <remarks>
+    /// Recorded so revert can tell "still as Quiesce left it" from "something changed it since", which
+    /// is the same conflict test the registry and service paths apply. Without it, a restore would
+    /// overwrite a priority the user had deliberately set after engaging.
+    /// </remarks>
+    [JsonPropertyName("intendedPriority")]
+    public string? IntendedPriority { get; init; }
 
     /// <summary>Broadcasts revert must re-issue. In the journal, not the catalog, on purpose.</summary>
     [JsonPropertyName("activation")]

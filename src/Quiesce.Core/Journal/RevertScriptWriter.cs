@@ -159,6 +159,46 @@ public sealed class RevertScriptWriter : IDisposable
         _writer.WriteLine();
     }
 
+    /// <summary>
+    /// Records a process step as a comment, because there is no safe command to emit.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The only step kind this script cannot undo, and it says so rather than emitting something that
+    /// looks like an undo. A close has no inverse at all. A throttle technically does — PowerShell can
+    /// set a priority class by PID — but this file exists to be run after a crash, a reboot, or an
+    /// uninstall, and by then the PID has almost certainly been reused. Writing a priority onto whatever
+    /// process inherited the number is a worse outcome than writing nothing, and this script has no way
+    /// to check a creation time.
+    /// </para>
+    /// <para>
+    /// The reassuring part is worth stating in the file: a priority class is not persistent. It is gone
+    /// when the process exits and gone after a reboot, so a throttle Quiesce failed to undo costs the
+    /// user a restart of that application and nothing else.
+    /// </para>
+    /// </remarks>
+    public void AppendProcessNote(int stepId, ProcessPrior prior, Catalog.ProcessAction action, string? intended)
+    {
+        _writer.WriteLine($"REM --- step {stepId}: process {prior.ImageName} (pid {prior.Pid})");
+
+        if (action == Catalog.ProcessAction.Close)
+        {
+            _writer.WriteLine("REM  (asked to close. Nothing here can reopen it, and neither can Quiesce -");
+            _writer.WriteLine("REM   relaunching would mean guessing the command line, and for a browser it");
+            _writer.WriteLine("REM   would restore the window without the tabs. Reopen it yourself.)");
+        }
+        else
+        {
+            _writer.WriteLine($"REM  (priority lowered to {intended ?? "a lower class"}, was {prior.PriorityClass}.");
+            _writer.WriteLine("REM   Not restored here: this script runs by PID, and after a crash or reboot that");
+            _writer.WriteLine("REM   number belongs to something else. A priority class does not survive the");
+            _writer.WriteLine("REM   process exiting, so restarting the application clears it - or run");
+            _writer.WriteLine("REM   'quiesce revert-all', which checks the process is still the same one.)");
+        }
+
+        _writer.WriteLine();
+    }
+
     /// <summary>Appends a human note (e.g. an activation the script cannot replay).</summary>
     public void AppendNote(string note) => _writer.WriteLine($"REM  NOTE: {note}");
 

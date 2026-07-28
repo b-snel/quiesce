@@ -1,6 +1,6 @@
 ﻿{
     "schemaVersion":  1,
-    "catalogVersion":  "0.4.0",
+    "catalogVersion":  "0.5.0",
     "entries":  [
                     {
                         "id":  "privacy.diagnostic-data-off",
@@ -1124,6 +1124,162 @@
                                        ],
                         "whatItBreaks":  "PRINTING STOPS ENTIRELY while paused, including print-to-PDF. Queued jobs will not go out until Restore. There is no measured frame-time benefit; this exists because people ask for it.",
                         "notes":  "Session scope: Quiesce restores the original start type, delayed-auto flag and running state on Restore. Start type is only written AFTER the service is confirmed stopped, so a refused stop leaves it exactly as found."
+                    },
+                    {
+                        "id":  "apps.close-browsers",
+                        "category":  "apps",
+                        "title":  "Close web browsers",
+                        "evidence":  "Situational",
+                        "impact":  "Medium",
+                        "riskTier":  2,
+                        "scope":  "Session",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "process",
+                                        "action":  "close",
+                                        "imageName":  "chrome",
+                                        "underDirectories":  [
+                                                                 "\\Google\\Chrome\\Application\\"
+                                                             ]
+                                    },
+                                    {
+                                        "kind":  "process",
+                                        "action":  "close",
+                                        "imageName":  "msedge",
+                                        "underDirectories":  [
+                                                                 "\\Microsoft\\Edge\\Application\\"
+                                                             ]
+                                    },
+                                    {
+                                        "kind":  "process",
+                                        "action":  "close",
+                                        "imageName":  "firefox",
+                                        "underDirectories":  [
+                                                                 "\\Mozilla Firefox\\"
+                                                             ]
+                                    },
+                                    {
+                                        "kind":  "process",
+                                        "action":  "close",
+                                        "imageName":  "brave",
+                                        "underDirectories":  [
+                                                                 "\\BraveSoftware\\Brave-Browser\\Application\\"
+                                                             ]
+                                    },
+                                    {
+                                        "kind":  "process",
+                                        "action":  "close",
+                                        "imageName":  "opera",
+                                        "underDirectories":  [
+                                                                 "\\Programs\\Opera\\",
+                                                                 "\\Programs\\Opera GX\\"
+                                                             ]
+                                    },
+                                    {
+                                        "kind":  "process",
+                                        "action":  "close",
+                                        "imageName":  "vivaldi",
+                                        "underDirectories":  [
+                                                                 "\\Vivaldi\\Application\\"
+                                                             ]
+                                    },
+                                    {
+                                        "kind":  "process",
+                                        "action":  "close",
+                                        "imageName":  "chromium",
+                                        "underDirectories":  [
+                                                                 "\\Chromium\\Application\\"
+                                                             ]
+                                    },
+                                    {
+                                        "kind":  "process",
+                                        "action":  "close",
+                                        "imageName":  "librewolf",
+                                        "underDirectories":  [
+                                                                 "\\LibreWolf\\"
+                                                             ]
+                                    },
+                                    {
+                                        "kind":  "process",
+                                        "action":  "close",
+                                        "imageName":  "waterfox",
+                                        "underDirectories":  [
+                                                                 "\\Waterfox\\"
+                                                             ]
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "RESTORE DOES NOT REOPEN THEM. A browser with a few dozen tabs is usually the largest single consumer of RAM and background CPU on a gaming machine, so this is the highest-value app group - but closing is the one thing Quiesce cannot undo, and it does not pretend otherwise. Downloads and uploads in progress stop. Anything a page was holding unsaved is up to the browser to restore, not to Quiesce. Windows asking about unsaved work is respected: a browser that declines to close is left running and reported.",
+                        "notes":  "ON in the shipped default profile, which is the one place Quiesce enables something irreversible by default - the preflight dialog names every browser process by PID before anything is asked to close, and that approval is the consent gate. Switch this entry off to keep browsers alive. Targeting is path-based: the image name is paired with the directory the real installation lives under, so a chrome.exe sitting in a temp directory is not treated as the browser you meant. The directory fragments are delimited at both ends, so \\Discord\\-style prefixes cannot match a longer name. Embedded Chromium inside a launcher (Epic and Battle.net both ship one called chrome.exe) is excluded twice over: by the directory, and by the classifier putting anything under a launcher root out of reach. msedgewebview2 is deliberately NOT here - it hosts other applications' windows, including Widgets and new Outlook, and closing it as if it were Edge takes those with it. Tor Browser is not covered: its UI process is firefox.exe under \\Tor Browser\\, which the firefox op's directory does not match."
+                    },
+                    {
+                        "id":  "apps.throttle-discord",
+                        "category":  "apps",
+                        "title":  "Lower Discord's priority while you play",
+                        "evidence":  "Situational",
+                        "impact":  "Low",
+                        "riskTier":  1,
+                        "scope":  "Session",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "process",
+                                        "action":  "throttle",
+                                        "imageName":  "Discord",
+                                        "underDirectories":  [
+                                                                 "\\Discord\\"
+                                                             ],
+                                        "throttleTo":  "BelowNormal"
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Nothing is closed and voice stays connected. Discord may feel slower to switch channels or render an image while a game is loading, which is the whole point: it yields CPU instead of competing for it. Every process gets its own priority class captured and written back exactly on Restore, and a priority class does not survive the process exiting anyway.",
+                        "notes":  "OFF by default: Discord is voice, and a voice application is the last thing to interfere with uninvited. BelowNormal rather than Idle, deliberately - Idle means \"runs only when nothing else wants the CPU\", which during a loading screen or a busy frame is exactly when the voice thread needs to run, and stuttering voice chat is a worse regression than the frame time it buys. Discord Canary and PTB are not covered: the directory fragment \\Discord\\ is delimited at both ends and does not match \\DiscordCanary\\."
+                    },
+                    {
+                        "id":  "apps.close-claude",
+                        "category":  "apps",
+                        "title":  "Close the Claude desktop app",
+                        "evidence":  "Situational",
+                        "impact":  "Medium",
+                        "riskTier":  2,
+                        "scope":  "Session",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "process",
+                                        "action":  "close",
+                                        "imageName":  "claude",
+                                        "underDirectories":  [
+                                                                 "\\AnthropicClaude\\"
+                                                             ]
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "RESTORE DOES NOT REOPEN IT. Like a browser it is a Chromium application with many processes, so it is worth closing for the same reasons. Anything unsaved is the application's business, not Quiesce's; if it prompts, it is left running and reported.",
+                        "notes":  "OFF by default. This is the one entry whose behaviour differs between a development machine and a normal one, and the difference is structural rather than a special case: Quiesce never closes the application that launched it, matched by image path and not merely by PID, so while Quiesce runs under this app every one of its processes is refused with that reason shown. Launched normally - from Explorer, which is itself never-touch - the same rule leaves only Quiesce's own image protected and this entry does what it says. That is what makes it safe to develop the feature against the very application it will later close. Measured while writing this: 14 live processes on the development machine, all 14 refused, zero priority drift."
                     }
                 ]
 }

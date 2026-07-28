@@ -104,12 +104,11 @@ public sealed record PreflightRow
             EntryId = step.EntryId,
             ScopeLabel = step.Scope == Core.Catalog.TweakScope.Session ? "session" : "persistent",
             Target = step.Target,
-            PriorText = step.ServiceBefore is { } svc
-                ? $"start type {svc.StartType}{(svc.DelayedAutostart ? " (delayed)" : string.Empty)}, currently {svc.RunState}"
-                : Describe(step.Prior!),
-            NewText = step.ServiceBefore is not null
-                ? $"start type {step.IntendedStartType}{(step.IntendedStop ? ", stopped now" : ", left running")}"
-                : $"{step.IntendedNew!.Kind} {JsonSerializer.Serialize(step.IntendedNew.Data)}",
+            // Dispatched on which kind of prior the step actually carries. An earlier version tested only
+            // for a service and dereferenced the registry prior otherwise, which a process step - carrying
+            // neither - would have turned into a null reference in the middle of the approval dialog.
+            PriorText = Prior(step),
+            NewText = Change(step),
             ActivationText = activations.Count > 0
                 ? $"then notifies Windows: {string.Join(", ", activations)}"
                 : string.Empty,
@@ -129,6 +128,40 @@ public sealed record PreflightRow
         ActivationText = string.Empty,
         ActivationVisibility = Visibility.Collapsed,
     };
+
+    private static string Prior(PlannedStep step)
+    {
+        if (step.ServiceBefore is { } svc)
+        {
+            return $"start type {svc.StartType}{(svc.DelayedAutostart ? " (delayed)" : string.Empty)}, currently {svc.RunState}";
+        }
+
+        if (step.ProcessBefore is { } process)
+        {
+            return $"running at {process.PriorityClass} priority";
+        }
+
+        return Describe(step.Prior!);
+    }
+
+    private static string Change(PlannedStep step)
+    {
+        if (step.ServiceBefore is not null)
+        {
+            return $"start type {step.IntendedStartType}{(step.IntendedStop ? ", stopped now" : ", left running")}";
+        }
+
+        if (step.ProcessBefore is not null)
+        {
+            // Stated at the point of approval, in the dialog where the user says yes. A close is the only
+            // thing in Quiesce that Restore does not undo, and the moment to say so is before it happens.
+            return step.ProcessAction == Core.Catalog.ProcessAction.Throttle
+                ? $"priority lowered to {step.IntendedPriority}, put back on Restore"
+                : "asked to close - Restore will NOT reopen it";
+        }
+
+        return $"{step.IntendedNew!.Kind} {JsonSerializer.Serialize(step.IntendedNew.Data)}";
+    }
 
     private static string Describe(RegistryProbe probe) => probe.Presence switch
     {

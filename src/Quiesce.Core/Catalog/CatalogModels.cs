@@ -96,6 +96,42 @@ public enum ServiceStartMode
     Disabled,
 }
 
+/// <summary>What a process op does. There is no terminate, and there never will be.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<ProcessAction>))]
+public enum ProcessAction
+{
+    /// <summary>
+    /// Ask the application to close, by posting <c>WM_CLOSE</c> to its windows.
+    /// </summary>
+    /// <remarks>
+    /// The one action in Quiesce that does not round-trip: Restore lists what was closed and does not
+    /// relaunch it. Recorded here rather than hidden, because an entry that cannot be undone must read
+    /// differently from one that can.
+    /// </remarks>
+    Close,
+
+    /// <summary>Lower the process's priority class, capturing the prior class for restore.</summary>
+    Throttle,
+}
+
+/// <summary>
+/// How far a throttle may lower a process. Deliberately has no value above Normal.
+/// </summary>
+/// <remarks>
+/// The guardrail expressed as a type rather than as a check. <see cref="Guardrails.MaxAssignablePriority"/>
+/// still bounds every write at runtime, but a catalog cannot even <em>ask</em> for a raise: there is no
+/// spelling of "High" in this enum, so the JSON that would request it fails to parse.
+/// </remarks>
+[JsonConverter(typeof(JsonStringEnumConverter<ThrottleLevel>))]
+public enum ThrottleLevel
+{
+    /// <summary>Runs less often than normal work, but still runs. The safe default.</summary>
+    BelowNormal,
+
+    /// <summary>Runs only when nothing else wants the CPU. Starves anything latency-sensitive.</summary>
+    Idle,
+}
+
 /// <summary>Base for every kind of mutation a catalog entry can contain.</summary>
 /// <remarks>
 /// Polymorphic on the <c>kind</c> discriminator that catalog JSON already carried, so adding op
@@ -105,6 +141,7 @@ public enum ServiceStartMode
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "kind")]
 [JsonDerivedType(typeof(RegistryOpSpec), "registry")]
 [JsonDerivedType(typeof(ServiceOpSpec), "service")]
+[JsonDerivedType(typeof(ProcessOpSpec), "process")]
 public abstract record OpSpec
 {
     /// <summary>True when applying this op needs administrator rights, independent of the entry.</summary>
@@ -140,6 +177,111 @@ public sealed record ServiceOpSpec : OpSpec
     public override bool NeedsAdmin => true;
 
     public override string TargetDescription => $"service {Service}";
+}
+
+/// <summary>
+/// A group of running applications to close or throttle, identified by where they live on disk.
+/// </summary>
+/// <remarks>
+/// <para>
+/// TARGETING IS PATH-BASED, and that is the whole design of this op. An image name alone is not an
+/// identity: anything can be called <c>chrome.exe</c>, and a copy sitting in a temp directory is not
+/// the browser the user meant. So a match requires the image name <em>and</em> a directory the real
+/// installation lives under, both from the catalog, plus a full image path Quiesce could actually
+/// read — a process whose path is unreadable never matches anything.
+/// </para>
+/// <para>
+/// One op describes a group and fans out to one plan step per live process, so the preflight list
+/// names every process by PID before anything is asked to close, and each process carries its own
+/// journal record and its own prior. Processes that appear <em>after</em> the plan is built are not
+/// touched: what the user approved is what runs.
+/// </para>
+/// <para>
+/// This op narrows; it never widens. Everything a process op selects is still put through
+/// <see cref="ProcessClassifier"/> and refused if it is protected, hosts a service, belongs to a game
+/// or launcher, or is part of what launched Quiesce. The catalog chooses among candidates the
+/// guardrails already permit.
+/// </para>
+/// </remarks>
+public sealed record ProcessOpSpec : OpSpec
+{
+    [JsonPropertyName("action")]
+    public required ProcessAction Action { get; init; }
+
+    /// <summary>Image name, with or without the <c>.exe</c> suffix. Matched case-insensitively.</summary>
+    [JsonPropertyName("imageName")]
+    public required string ImageName { get; init; }
+
+    /// <summary>
+    /// Directory fragments the real installation lives under, e.g. <c>\Google\Chrome\Application\</c>.
+    /// A process matches when its full image path contains any one of them.
+    /// </summary>
+    /// <remarks>
+    /// Each fragment is separator-delimited at both ends on purpose, so it names a <em>directory</em>
+    /// rather than a prefix: <c>\Discord\</c> cannot match <c>\DiscordCanary\</c>, and
+    /// <c>\Google\Chrome\Application\</c> cannot match a stray <c>chrome.exe</c> two directories up.
+    /// Fragments rather than absolute roots because the same application legitimately installs under
+    /// Program Files on one machine and LocalAppData on another, and an absolute list would silently
+    /// match nothing on the machine it was not written for.
+    /// </remarks>
+    [JsonPropertyName("underDirectories")]
+    public required IReadOnlyList<string> UnderDirectories { get; init; }
+
+    /// <summary>Required for <see cref="ProcessAction.Throttle"/>, forbidden for a close.</summary>
+    [JsonPropertyName("throttleTo")]
+    public ThrottleLevel? ThrottleTo { get; init; }
+
+    /// <summary>
+    /// Closing or throttling a process in your own session needs no elevation.
+    /// </summary>
+    /// <remarks>
+    /// The first op kind that does not. An unelevated Quiesce cannot read the image path of an
+    /// elevated process, so those simply never match — refused for lack of an identity rather than
+    /// acted on with a guess.
+    /// </remarks>
+    public override bool NeedsAdmin => false;
+
+    public override string TargetDescription => Action == ProcessAction.Throttle
+        ? $"throttle {ImageName} to {ThrottleTo}"
+        : $"close {ImageName}";
+
+    /// <summary>
+    /// Whether one live process is a member of this group.
+    /// </summary>
+    /// <remarks>
+    /// Takes primitives rather than a snapshot so the catalog layer stays free of platform types and
+    /// the rule can be tested without a process.
+    /// </remarks>
+    public bool Matches(string imageName, string? imagePath)
+    {
+        ArgumentNullException.ThrowIfNull(imageName);
+
+        // No readable path, no match. Never fall back to the name: "something called chrome.exe,
+        // location unknown" is exactly the case name matching gets wrong, and the cost of being wrong
+        // is closing a program the user did not ask Quiesce to close.
+        if (string.IsNullOrWhiteSpace(imagePath))
+        {
+            return false;
+        }
+
+        if (!Bare(imageName).Equals(Bare(ImageName), StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        foreach (var directory in UnderDirectories)
+        {
+            if (imagePath.Contains(directory, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    internal static string Bare(string imageName) =>
+        imageName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? imageName[..^4] : imageName;
 }
 
 /// <summary>A single registry mutation within a catalog entry.</summary>

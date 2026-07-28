@@ -105,6 +105,54 @@ public class ViewConstructionTests
     }
 
     [Fact]
+    public void The_preflight_row_renders_every_kind_of_step_including_a_process()
+    {
+        // A real crash, not a hypothetical one. The row builder tested for a service prior and otherwise
+        // dereferenced the registry prior, so a process step - which carries neither - was a null
+        // reference in the middle of the dialog the user approves changes in. It is also the one place
+        // "Restore will not reopen it" has to be said, so this asserts the wording is actually there.
+        var rows = OnStaThread(() => new[]
+        {
+            PreflightRow.From(ProcessStep(Core.Catalog.ProcessAction.Close)),
+            PreflightRow.From(ProcessStep(Core.Catalog.ProcessAction.Throttle)),
+        });
+
+        Assert.Contains("running at Normal priority", rows[0].PriorText);
+        Assert.Contains("NOT reopen", rows[0].NewText);
+        Assert.Contains("put back on Restore", rows[1].NewText);
+    }
+
+    private static Core.Engine.PlannedStep ProcessStep(Core.Catalog.ProcessAction action) => new()
+    {
+        StepId = 1,
+        EntryId = "apps.test",
+        Scope = Core.Catalog.TweakScope.Session,
+        Op = new Core.Catalog.ProcessOpSpec
+        {
+            Action = action,
+            ImageName = "chrome",
+            UnderDirectories = [@"\Google\Chrome\Application\"],
+            ThrottleTo = action == Core.Catalog.ProcessAction.Throttle ? Core.Catalog.ThrottleLevel.Idle : null,
+        },
+        Target = "close chrome — chrome (pid 1)",
+        ProcessBefore = new Core.Platform.ProcessSnapshot
+        {
+            Identity = new Core.Platform.ProcessIdentity { Pid = 1, CreatedUtcTicks = 1 },
+            ImageName = "chrome",
+            ImagePath = @"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            SessionId = 1,
+            PriorityClass = System.Diagnostics.ProcessPriorityClass.Normal,
+            HasVisibleWindow = true,
+        },
+        ProcessAction = action,
+        IntendedPriority = action == Core.Catalog.ProcessAction.Throttle
+            ? System.Diagnostics.ProcessPriorityClass.Idle
+            : null,
+        Activation = [],
+        NoOp = false,
+    };
+
+    [Fact]
     public void Dashboard_renders_the_engaged_state_differently()
     {
         var engaged = new AppState

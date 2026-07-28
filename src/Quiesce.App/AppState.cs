@@ -79,6 +79,8 @@ public sealed record AppState
     public static TransactionEngine CreateEngine()
     {
         var broadcaster = new Win32ActivationBroadcaster();
+        var services = new Win32ServiceControl();
+        var processes = new Win32ProcessControl();
 
         return new TransactionEngine(
             new Win32Registry(),
@@ -91,7 +93,14 @@ public sealed record AppState
                 UserSid = QuiescePaths.CurrentUserSid(),
             },
             broadcaster,
-            new Win32ServiceControl());
+            services,
+            processes,
+            // ForMachine, never the bare constructor: it is what resolves the images of Quiesce and of
+            // whatever launched it, without which the app could close or throttle its own host process.
+            Quiesce.Core.ProcessClassifier.ForMachine(
+                processes,
+                gameDirectories: null,
+                serviceHostPids: services.ServiceHostProcessIds()));
     }
 
     public static string AppVersion() =>

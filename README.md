@@ -61,6 +61,15 @@ Process suspension and injection are absent for a concrete reason: kernel anti-c
 and an EasyAntiCheat ban propagates across every EAC title tied to your hardware ID. Quiesce contains zero
 injection primitives, and CI fails the build if any appear.
 
+**And no `TerminateProcess`, ever.** Quiesce closes applications by asking — the same request clicking the X
+sends — and waits. One that declines, which almost always means it is prompting you about unsaved work, is left
+running and reported. There is no escalation path, because a slightly less lean machine is a better outcome than
+discarding your work without asking.
+
+The honest limit of that: **closing is the one thing Quiesce cannot undo.** Restore tells you what was closed
+and leaves reopening it to you, rather than guessing a command line or handing a browser back without its tabs.
+Everything else — every registry value, every service, every priority class — round-trips exactly.
+
 ## Requirements
 
 - Windows 10 2004+ / Windows 11 (developed against Windows 11 25H2, build 26200)

@@ -164,6 +164,75 @@ public class ProcessThrottlerTests : IDisposable
     }
 
     [Fact]
+    public void A_process_above_the_ceiling_is_not_throttled_at_all()
+    {
+        // Do not create an obligation that cannot be discharged. Lowering a realtime process would work
+        // perfectly well, and then restore would have to raise it back past the ceiling - which Quiesce
+        // will not do, because assigning that class starves the compositor and the audio graph.
+        // BannedSymbols makes the class unnameable here, so the value is constructed by number.
+        const ProcessPriorityClass aboveTheCeiling = (ProcessPriorityClass)0x00000100;
+        var app = _processes.Add("app", @"C:\Apps\App\app.exe", priority: aboveTheCeiling);
+
+        var outcome = ThrottlerWith().Throttle(app.Identity, ProcessPriorityClass.Idle);
+
+        Assert.False(outcome.Succeeded);
+        Assert.Contains("above the AboveNormal ceiling", outcome.Detail);
+        Assert.Empty(_processes.PriorityLog);
+    }
+
+    [Fact]
+    public void Restore_refuses_a_recorded_prior_above_the_ceiling()
+    {
+        // Throttle refuses to create this obligation, so no journal this build writes can ask for it - but
+        // a journal is a file that outlives the build that wrote it, and "restore whatever the record says"
+        // would turn an edited record into an arbitrary-priority primitive.
+        const ProcessPriorityClass aboveTheCeiling = (ProcessPriorityClass)0x00000100;
+        var app = _processes.Add("app", @"C:\Apps\App\app.exe", priority: ProcessPriorityClass.Idle);
+
+        var outcome = ThrottlerWith().Restore(app.Identity, aboveTheCeiling);
+
+        Assert.False(outcome.Succeeded);
+        Assert.Contains("Restart the process", outcome.Detail);
+        Assert.Equal(ProcessPriorityClass.Idle, _processes.Query(app.Identity).PriorityClass);
+    }
+
+    [Fact]
+    public void The_prior_is_handed_to_the_caller_before_the_write_happens()
+    {
+        // The write-ahead hook. The prior is read inside Throttle, so a caller that has to make it durable
+        // first would otherwise read the priority a second time - and journal an answer the write never
+        // raced against.
+        var app = _processes.Add("app", @"C:\Apps\App\app.exe", priority: ProcessPriorityClass.Normal);
+        var observed = new List<string>();
+        _processes.BeforePriorityWrite = () => observed.Add("write");
+
+        ThrottlerWith().Throttle(
+            app.Identity,
+            ProcessPriorityClass.Idle,
+            beforeWrite: prior => observed.Add($"hook:{prior}"));
+
+        Assert.Equal(["hook:Normal", "write"], observed);
+    }
+
+    [Fact]
+    public void The_write_ahead_hook_does_not_fire_when_nothing_will_be_written()
+    {
+        // A refusal or a no-op must not make a caller journal a change that never happens: the journal
+        // would then owe a restore for a process Quiesce never touched.
+        var refused = _processes.Add("host", @"C:\Apps\Host\host.exe", priority: ProcessPriorityClass.Normal);
+        var already = _processes.Add("app", @"C:\Apps\App\app.exe", priority: ProcessPriorityClass.Idle);
+        var fired = new List<string>();
+
+        var throttler = ThrottlerWith(
+            hostImages: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { @"C:\Apps\Host\host.exe" });
+
+        throttler.Throttle(refused.Identity, ProcessPriorityClass.Idle, beforeWrite: _ => fired.Add("refused"));
+        throttler.Throttle(already.Identity, ProcessPriorityClass.Idle, beforeWrite: _ => fired.Add("noop"));
+
+        Assert.Empty(fired);
+    }
+
+    [Fact]
     public void Restore_does_not_re_run_the_class_guardrails()
     {
         // Quiesce is strict about creating obligations and never refuses to discharge one. If a game

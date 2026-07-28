@@ -33,8 +33,9 @@ public sealed record ProfileFile
 /// never what is <em>applied</em>.
 /// <para>
 /// The built-in default matches the approved plan: GameDVR capture off, mouse acceleration off,
-/// Widgets off, consumer features off, and the ContentDeliveryManager set. Everything else — every
-/// A/B experiment, every no-evidence row, every cosmetic shell tweak — ships visible and off.
+/// Widgets off, consumer features off, the ContentDeliveryManager set, and browsers closed. Everything
+/// else — every A/B experiment, every no-evidence row, every cosmetic shell tweak, every service, and
+/// the other two app groups — ships visible and off.
 /// </para>
 /// </remarks>
 public sealed class ProfileStore(string dataRoot)
@@ -48,6 +49,15 @@ public sealed class ProfileStore(string dataRoot)
     };
 
     /// <summary>The plan's default profile. Small, defensible, and honest about what it excludes.</summary>
+    /// <remarks>
+    /// <c>apps.close-browsers</c> is the only irreversible thing Quiesce enables by default, and it is
+    /// here because the product decision was explicit: browsers are closed by default, with keeping them
+    /// alive available as a toggle. What makes that defensible is that nothing happens without the
+    /// preflight dialog, which names every browser process by PID and states that Restore will not reopen
+    /// them before the user approves anything. The two other app groups — throttling Discord, closing the
+    /// Claude desktop app — are off, so the standing rule holds everywhere it can: a group ships visible
+    /// and off unless there is a stated decision to the contrary.
+    /// </remarks>
     public static readonly IReadOnlyList<string> BuiltInDefault =
     [
         "gaming.gamedvr-capture-off",
@@ -55,6 +65,7 @@ public sealed class ProfileStore(string dataRoot)
         "shell.disable-widgets-policy",
         "bloat.consumer-features-off",
         "bloat.contentdelivery-off",
+        "apps.close-browsers",
     ];
 
     private string Path => System.IO.Path.Combine(dataRoot, "profiles.json");

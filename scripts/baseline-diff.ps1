@@ -181,6 +181,22 @@ $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIde
 $testable = if ($elevated) { $catalog.entries } else { $catalog.entries | Where-Object { -not $_.requiresAdmin } }
 $skipped  = if ($elevated) { @() } else { $catalog.entries | Where-Object { $_.requiresAdmin } }
 
+# Process entries are excluded unconditionally, and the exclusion is printed.
+#
+# This script's entire method is "snapshot the registry, engage, restore, prove it is byte-identical".
+# Process ops are outside that method in both directions: a close cannot be undone at all, and a
+# priority class is not stored in the registry and does not survive the process exiting. Including them
+# would not measure anything - it would just close the operator's browser, five times, to assert
+# something the snapshot cannot see.
+#
+# Automatic rather than left to -Skip. The whole reason -Skip exists is that a filter which looks right
+# and silently matches nothing already cost a run nine unintended service stops; relying on the operator
+# to remember a flag before every acceptance run is the same bet with worse odds.
+$processEntries = @($testable | Where-Object { @($_.ops | Where-Object { $_.kind -eq 'process' }).Count -gt 0 })
+if ($processEntries.Count -gt 0) {
+    $testable = @($testable | Where-Object { @($_.ops | Where-Object { $_.kind -eq 'process' }).Count -eq 0 })
+}
+
 # -Only / -Skip narrow the run for staging. Applied after the elevation filter so the SKIPPED
 # report still means "needs elevation" and never silently absorbs a deliberate exclusion.
 #
@@ -202,7 +218,15 @@ if ($Only.Count -gt 0) { $testable = @($testable | Where-Object { & $matchesPref
 $afterOnly = @($testable).Count
 if ($Skip.Count -gt 0) { $testable = @($testable | Where-Object { -not (& $matchesPrefix $_.id $Skip) }) }
 $afterSkip = @($testable).Count
-if ($afterSkip -eq 0) { throw "No entries selected. -Only $($Only -join ',') / -Skip $($Skip -join ',') matched nothing." }
+if ($afterSkip -eq 0) {
+    # Name the likely cause rather than leaving the operator to guess. Asking for -Only apps. is a
+    # reasonable thing to try, and "matched nothing" would be a misleading answer to it.
+    $wanted = @($processEntries | Where-Object { & $matchesPrefix $_.id (@($Only) + @($Skip)) })
+    if ($wanted.Count -gt 0) {
+        throw "No entries selected: $($wanted.id -join ', ') contain process ops, which this harness excludes - it proves byte-identical registry state, and closing an application has no byte-level undo."
+    }
+    throw "No entries selected. -Only $($Only -join ',') / -Skip $($Skip -join ',') matched nothing."
+}
 
 # A prefix that matches nothing in the WHOLE catalog is a typo or a quoting problem, and the cost of
 # not noticing is running the tweaks you meant to exclude. Validate against the full catalog rather
@@ -243,6 +267,13 @@ if ($skipped.Count -gt 0) {
     Write-Host "SKIPPED (need elevation - re-run this script as Administrator to cover them):" -ForegroundColor Yellow
     $skipped | ForEach-Object { Write-Host "  $($_.id)" -ForegroundColor Yellow }
 }
+if ($processEntries.Count -gt 0) {
+    Write-Host "NOT COVERED BY THIS HARNESS ($($processEntries.Count) process entr$(if ($processEntries.Count -eq 1) {'y'} else {'ies'})):" -ForegroundColor Yellow
+    $processEntries | ForEach-Object { Write-Host "  $($_.id)" -ForegroundColor Yellow }
+    Write-Host "  A byte-level registry diff cannot verify these. Closing an application has no undo, and a" -ForegroundColor Yellow
+    Write-Host "  priority class lives in the process, not the registry, and is gone when it exits. Verify" -ForegroundColor Yellow
+    Write-Host "  them by engaging with only those entries enabled and watching the reported notes." -ForegroundColor Yellow
+}
 Write-Host "rounds   : $Rounds"
 Write-Host ""
 
@@ -271,6 +302,7 @@ foreach ($entry in $testable) {
                 # materialization that a three-fact comparison alone would miss.
                 [void]$subtrees.Add("HKLM:\SYSTEM\CurrentControlSet\Services\$($op.service)")
             }
+            'process' { throw "$($entry.id): process ops should have been excluded before this point - the exclusion above is broken, which would mean this run was about to close applications it cannot reopen" }
             default { throw "$($entry.id): unknown op kind '$($op.kind)'" }
         }
     }

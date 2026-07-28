@@ -1,4 +1,5 @@
 using System.Text;
+using Quiesce.Core;
 using Quiesce.Core.Catalog;
 
 namespace Quiesce.Tests;
@@ -172,6 +173,179 @@ public class CatalogTests
           "whatItBreaks": "{{whatItBreaks}}"
         }
         """;
+
+    // ------------------------------------------------- process ops (M5)
+
+    /// <summary>
+    /// A one-op process entry, valid unless a parameter is deliberately spoiled.
+    /// </summary>
+    private static string ProcessEntryJson(
+        string action = "close",
+        string imageName = "chrome",
+        string directories = @"[""\\Google\\Chrome\\Application\\""]",
+        string extraOpFields = "",
+        string scope = "Session",
+        string requiresAdmin = "false",
+        string extraOps = "")
+        => $$"""
+        {
+          "id": "apps.test",
+          "category": "apps",
+          "title": "t",
+          "evidence": "Situational",
+          "impact": "Medium",
+          "riskTier": 2,
+          "scope": "{{scope}}",
+          "requiresAdmin": {{requiresAdmin}},
+          "requiresReboot": false,
+          "ops": [{
+            "kind": "process",
+            "action": "{{action}}",
+            "imageName": "{{imageName}}",
+            "underDirectories": {{directories}}{{extraOpFields}}
+          }{{extraOps}}],
+          "whatItBreaks": "nothing"
+        }
+        """;
+
+    private static CatalogException Refused(string entryJson) => Assert.Throws<CatalogException>(
+        () => CatalogLoader.Load(
+            new MemoryStream(Encoding.UTF8.GetBytes(
+                $$"""{ "schemaVersion": 1, "catalogVersion": "x", "entries": [{{entryJson}}] }""")),
+            "test.json"));
+
+    [Fact]
+    public void A_valid_process_entry_loads()
+    {
+        var file = CatalogLoader.Load(
+            new MemoryStream(Encoding.UTF8.GetBytes(
+                $$"""{ "schemaVersion": 1, "catalogVersion": "x", "entries": [{{ProcessEntryJson()}}] }""")),
+            "test.json");
+
+        var op = Assert.IsType<ProcessOpSpec>(Assert.Single(file.Entries).Ops[0]);
+        Assert.Equal(ProcessAction.Close, op.Action);
+        Assert.False(op.NeedsAdmin);
+    }
+
+    [Fact]
+    public void A_catalog_cannot_name_a_never_touch_process()
+    {
+        // The rule that makes every guardrail meaningful: data narrows what Quiesce will touch and can
+        // never widen it. A catalog shipped by anyone - including a future me - must not be able to talk
+        // the app into closing the shell.
+        Assert.Contains("never-touch", Refused(ProcessEntryJson(imageName: "explorer")).Message);
+        Assert.Contains("never-touch", Refused(ProcessEntryJson(imageName: "csrss")).Message);
+
+        // Hosts other applications' windows - Widgets, new Outlook, launcher panes. Closing it as if it
+        // were Edge takes those with it, which is why it is never-touch rather than a browser.
+        Assert.Contains("never-touch", Refused(ProcessEntryJson(imageName: "msedgewebview2")).Message);
+    }
+
+    [Fact]
+    public void A_process_op_must_say_where_the_program_lives()
+    {
+        Assert.Contains("path-based", Refused(ProcessEntryJson(directories: "[]")).Message);
+    }
+
+    [Fact]
+    public void A_directory_fragment_must_name_a_directory()
+    {
+        // Delimited at both ends, so it cannot match a longer name that merely starts the same way -
+        // "\Discord" would otherwise also collect Discord Canary.
+        Assert.Contains("backslash", Refused(ProcessEntryJson(directories: @"[""\\Discord""]")).Message);
+        Assert.Contains("backslash", Refused(ProcessEntryJson(directories: @"[""Discord\\""]")).Message);
+        Assert.Contains("every path", Refused(ProcessEntryJson(directories: @"[""\\""]")).Message);
+        Assert.Contains("literal path fragment", Refused(ProcessEntryJson(directories: @"[""\\Apps\\*\\""]")).Message);
+        Assert.Contains("literal path fragment", Refused(ProcessEntryJson(directories: @"[""\\Apps\\..\\""]")).Message);
+    }
+
+    [Fact]
+    public void An_image_name_must_be_a_bare_name()
+    {
+        Assert.Contains("bare image name", Refused(ProcessEntryJson(imageName: @"C:\\Apps\\a")).Message);
+    }
+
+    [Fact]
+    public void A_throttle_must_say_what_to_throttle_to_and_a_close_must_not()
+    {
+        Assert.Contains("what to throttle to", Refused(ProcessEntryJson(action: "throttle")).Message);
+        Assert.Contains(
+            "sets no priority",
+            Refused(ProcessEntryJson(extraOpFields: ", \"throttleTo\": \"Idle\"")).Message);
+    }
+
+    [Fact]
+    public void The_throttle_level_has_no_spelling_for_a_raise()
+    {
+        // The ceiling as a type rather than a check: there is no "High" in ThrottleLevel, so a catalog
+        // asking for one does not fail validation - it fails to parse.
+        var refused = Refused(ProcessEntryJson(action: "throttle", extraOpFields: ", \"throttleTo\": \"High\""));
+        Assert.Contains("malformed catalog", refused.Message);
+    }
+
+    [Fact]
+    public void An_entry_cannot_mix_a_close_with_anything_reversible()
+    {
+        // Entry-level atomicity is the transaction unit, and nothing unwinds "the application exited". An
+        // entry that mixed the two could not honour "never half-applied", and the guarantee is worth more
+        // than the flexibility.
+        const string registryOp = """
+        ,{
+          "kind": "registry", "hive": "HKCU", "view": "Registry64",
+          "subkey": "SOFTWARE\\Test", "value": "V", "expectedKind": "DWord", "leanData": 0
+        }
+        """;
+
+        Assert.Contains("only process ops", Refused(ProcessEntryJson(extraOps: registryOp)).Message);
+    }
+
+    [Fact]
+    public void An_entry_cannot_mix_close_and_throttle()
+    {
+        const string throttleOp = """
+        ,{
+          "kind": "process", "action": "throttle", "imageName": "firefox",
+          "underDirectories": ["\\Mozilla Firefox\\"], "throttleTo": "Idle"
+        }
+        """;
+
+        Assert.Contains("close and throttle", Refused(ProcessEntryJson(extraOps: throttleOp)).Message);
+    }
+
+    [Fact]
+    public void Process_entries_must_be_session_scoped_and_must_not_claim_admin()
+    {
+        Assert.Contains("Session scope", Refused(ProcessEntryJson(scope: "Persistent")).Message);
+        Assert.Contains("needs no elevation", Refused(ProcessEntryJson(requiresAdmin: "true")).Message);
+    }
+
+    [Fact]
+    public void The_shipped_browser_group_does_not_target_the_webview_host()
+    {
+        // Six live instances on the development machine, hosting Widgets and new Outlook among others.
+        // Closing it as if it were Edge takes those applications' windows with it.
+        var catalog = CatalogLoader.LoadFile(FindShippedCatalog());
+
+        var targeted = catalog.Entries
+            .SelectMany(e => e.Ops.OfType<ProcessOpSpec>())
+            .Select(op => op.ImageName)
+            .ToList();
+
+        Assert.NotEmpty(targeted);
+        Assert.DoesNotContain("msedgewebview2", targeted, StringComparer.OrdinalIgnoreCase);
+        Assert.All(targeted, name => Assert.False(Guardrails.IsProcessProtected(name)));
+    }
+
+    [Fact]
+    public void Everything_the_default_profile_enables_exists_in_the_shipped_catalog()
+    {
+        // A default profile naming an entry the catalog does not have would silently enable nothing, and
+        // the browser group was added to both in one change - exactly when a typo is easiest to make.
+        var catalog = CatalogLoader.LoadFile(FindShippedCatalog());
+        var ids = catalog.Entries.Select(e => e.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        Assert.All(ProfileStore.BuiltInDefault, id => Assert.Contains(id, ids));
+    }
 
     private static string FindShippedCatalog()
     {

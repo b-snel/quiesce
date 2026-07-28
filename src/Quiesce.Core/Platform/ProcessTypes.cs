@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json.Serialization;
 
 namespace Quiesce.Core.Platform;
 
@@ -126,6 +127,59 @@ public sealed record ProcessSnapshot
 
     /// <summary>False when the process has exited since it was enumerated.</summary>
     public bool Present { get; init; } = true;
+
+    public ProcessPrior ToPrior() => new()
+    {
+        Pid = Identity.Pid,
+        CreatedUtcTicks = Identity.CreatedUtcTicks,
+        ImageName = ImageName,
+        ImagePath = ImagePath,
+        PriorityClass = PriorityClass.ToString(),
+    };
+}
+
+/// <summary>
+/// Everything about a process that a revert needs, captured before it is touched.
+/// </summary>
+/// <remarks>
+/// Journalled, so it is read by the revert path — including the standalone one — and must stand alone
+/// without the catalog. The image path is here because a closed process cannot be queried afterwards
+/// and "which program did Quiesce close" is the whole value of the record.
+/// </remarks>
+public sealed record ProcessPrior
+{
+    [JsonPropertyName("pid")]
+    public required int Pid { get; init; }
+
+    /// <summary>
+    /// Creation time, which together with the PID identifies the instance rather than the number.
+    /// </summary>
+    /// <remarks>
+    /// Without it a restore three hours later could write a captured priority onto whatever process
+    /// inherited the PID — a silent mutation of a program Quiesce was never asked to touch.
+    /// </remarks>
+    [JsonPropertyName("createdUtcTicks")]
+    public required long CreatedUtcTicks { get; init; }
+
+    [JsonPropertyName("imageName")]
+    public required string ImageName { get; init; }
+
+    [JsonPropertyName("imagePath")]
+    public string? ImagePath { get; init; }
+
+    /// <summary>
+    /// The priority class as .NET spells it, stored as a string.
+    /// </summary>
+    /// <remarks>
+    /// A string rather than the enum because the enum's values are Win32 flag bits — legible as names,
+    /// meaningless as numbers in a journal someone has to read during a recovery. It also lets revert
+    /// refuse a class it does not recognise instead of coercing it into a number that would silently
+    /// change the process's priority.
+    /// </remarks>
+    [JsonPropertyName("priorityClass")]
+    public string? PriorityClass { get; init; }
+
+    public ProcessIdentity ToIdentity() => new() { Pid = Pid, CreatedUtcTicks = CreatedUtcTicks };
 }
 
 /// <summary>How a close attempt ended.</summary>

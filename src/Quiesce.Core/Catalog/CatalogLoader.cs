@@ -109,11 +109,19 @@ public static class CatalogLoader
                 Fail("whatItBreaks is required. 'Nothing' must be said explicitly.");
             }
 
+            ValidateProcessEntryShape(entry, Fail);
+
             foreach (var op in entry.Ops)
             {
                 if (op is ServiceOpSpec serviceOp)
                 {
                     ValidateService(serviceOp, entry, Fail);
+                    continue;
+                }
+
+                if (op is ProcessOpSpec processOp)
+                {
+                    ValidateProcess(processOp, Fail);
                     continue;
                 }
 
@@ -125,6 +133,126 @@ public static class CatalogLoader
 
                 ValidateRegistry(registryOp, entry, sourceName, Fail);
             }
+        }
+    }
+
+    /// <summary>
+    /// Entry-level rules for process ops, which constrain the whole entry rather than one op.
+    /// </summary>
+    /// <remarks>
+    /// The entry is the transaction unit, and a close cannot participate in a rollback — nothing
+    /// unwinds "the application exited". So an entry that mixes a close with anything reversible could
+    /// not honour the "never half-applied" guarantee, and the guarantee is worth more than the
+    /// flexibility. Refused at load, where it is a catalog bug with a message, rather than discovered
+    /// at apply time as a half-undone entry.
+    /// </remarks>
+    private static void ValidateProcessEntryShape(CatalogEntry entry, Action<string> Fail)
+    {
+        var processOps = entry.Ops.OfType<ProcessOpSpec>().ToList();
+        if (processOps.Count == 0)
+        {
+            return;
+        }
+
+        if (processOps.Count != entry.Ops.Count)
+        {
+            Fail("mixes process ops with registry or service ops. A close cannot be rolled back, so an " +
+                 "entry containing process ops must contain only process ops.");
+        }
+
+        if (processOps.Select(op => op.Action).Distinct().Count() > 1)
+        {
+            Fail("mixes close and throttle ops. A failed throttle rolls its entry back and a close " +
+                 "cannot, so one entry does one or the other.");
+        }
+
+        // A close is undone by the user reopening the application, and a priority class does not
+        // survive the process exiting - neither is a standing preference, and boot recovery deliberately
+        // leaves persistent-scoped steps alone.
+        if (entry.Scope != TweakScope.Session)
+        {
+            Fail($"process ops must be Session scope, not {entry.Scope}: neither a closed application nor " +
+                 "a priority class survives a reboot, so there is nothing for a persistent scope to mean.");
+        }
+
+        // Claiming admin rights this entry does not need would make the UI gate it, and gate it
+        // permanently for an unelevated user who could have run it perfectly well.
+        if (entry.RequiresAdmin)
+        {
+            Fail("declares requiresAdmin: true, but closing or throttling a process in your own session " +
+                 "needs no elevation.");
+        }
+    }
+
+    private static void ValidateProcess(ProcessOpSpec op, Action<string> Fail)
+    {
+        if (string.IsNullOrWhiteSpace(op.ImageName))
+        {
+            Fail("process op has no imageName.");
+            return;
+        }
+
+        if (op.ImageName.IndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, '*', '?']) >= 0)
+        {
+            Fail($"imageName '{op.ImageName}' must be a bare image name - paths and wildcards belong in " +
+                 "underDirectories, which is what actually establishes identity.");
+        }
+
+        // Data narrows, never widens. A catalog - shipped by anyone, including a future me - must not
+        // be able to talk Quiesce into closing the shell, a system-critical process, the compositor, or
+        // the WebView host that other applications' windows live in.
+        if (Guardrails.IsProcessProtected(op.ImageName))
+        {
+            Fail($"process '{op.ImageName}' is on the never-touch list and cannot appear in a catalog.");
+        }
+
+        if (op.UnderDirectories.Count == 0)
+        {
+            Fail($"process op '{op.ImageName}' names no directories. Targeting is path-based: an image " +
+                 "name on its own would match a copy of the program anywhere on disk.");
+        }
+
+        foreach (var directory in op.UnderDirectories)
+        {
+            if (string.IsNullOrWhiteSpace(directory))
+            {
+                Fail($"process op '{op.ImageName}' has an empty directory fragment.");
+                continue;
+            }
+
+            // Separator-delimited at both ends, so the fragment names a directory rather than a prefix.
+            // Without the trailing separator, "\Discord" would also match "\DiscordCanary\", and a
+            // one-character fragment would match every path on the machine.
+            if (!directory.StartsWith('\\') || !directory.EndsWith('\\'))
+            {
+                Fail($"directory fragment '{directory}' must start and end with a backslash, so that it " +
+                     "names a directory and cannot match a longer name that merely starts the same way.");
+            }
+
+            if (directory.Trim('\\').Length == 0)
+            {
+                Fail($"directory fragment '{directory}' names nothing and would match every path.");
+            }
+
+            if (directory.Contains("..", StringComparison.Ordinal)
+                || directory.IndexOfAny(['*', '?']) >= 0)
+            {
+                Fail($"directory fragment '{directory}' must be a literal path fragment: no wildcards, no '..'.");
+            }
+        }
+
+        switch (op.Action)
+        {
+            case ProcessAction.Throttle when op.ThrottleTo is null:
+                Fail($"throttle op '{op.ImageName}' does not say what to throttle to.");
+                break;
+
+            case ProcessAction.Close when op.ThrottleTo is not null:
+                Fail($"close op '{op.ImageName}' carries throttleTo '{op.ThrottleTo}'; a close sets no priority.");
+                break;
+
+            default:
+                break;
         }
     }
 

@@ -59,6 +59,8 @@ internal sealed class CliEnvironment
     public TransactionEngine CreateEngine()
     {
         var broadcaster = new Win32ActivationBroadcaster();
+        var services = new Win32ServiceControl();
+        var processes = new Win32ProcessControl();
 
         return new TransactionEngine(
             new Win32Registry(),
@@ -71,8 +73,36 @@ internal sealed class CliEnvironment
                 UserSid = QuiescePaths.CurrentUserSid(),
             },
             broadcaster,
-            new Win32ServiceControl());
+            services,
+            processes,
+            BuildProcessClassifier(processes, services));
     }
+
+    /// <summary>
+    /// Builds the classifier the process layer is gated on.
+    /// </summary>
+    /// <remarks>
+    /// Always through <see cref="ProcessClassifier.ForMachine"/>, never the bare constructor: the factory
+    /// is what resolves the images of Quiesce and of whatever launched it, and a classifier missing that
+    /// set would let the app close or throttle its own host. Service host PIDs come from one SCM
+    /// enumeration rather than one per process.
+    /// <para>
+    /// <c>gameDirectories</c> is null because game discovery is not wired up yet — the <c>discover</c>
+    /// verb still returns "not implemented". The consequence is specific and worth stating rather than
+    /// leaving to be found: with no allowlist, a running game classifies as Ordinary, so the
+    /// "change nothing while a game is live" guard in the closer and the throttler cannot fire. It does
+    /// not put games at risk of being closed — the catalog names the applications it acts on, and no game
+    /// is among them — but the guard is inert until discovery lands, and code that looks protected while
+    /// being inert is worse than code that admits it.
+    /// </para>
+    /// </remarks>
+    internal static Core.ProcessClassifier BuildProcessClassifier(
+        IProcessControl processes,
+        IServiceControl services) =>
+        Core.ProcessClassifier.ForMachine(
+            processes,
+            gameDirectories: null,
+            serviceHostPids: services.ServiceHostProcessIds());
 
     /// <summary>Delegates to the Core check so there is exactly one definition of "elevated".</summary>
     public static bool IsElevated() => Elevation.IsElevated();

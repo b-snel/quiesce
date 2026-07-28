@@ -73,6 +73,47 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - **M4** — `quiesce inventory` reports whether any session is remote, since that changes which
   guardrails are active and a support bundle that omits it cannot explain a refusal.
 
+- **M5** — Application control. Ops are now polymorphic over three kinds (`registry` | `service` |
+  `process`) on the same `kind` discriminator, so plan, journal, verify and revert share one path.
+- **M5** — **Graceful close only. There is no force path anywhere in Quiesce.** Closing asks by posting
+  `WM_CLOSE` to each top-level window and waits; an application that declines — almost always because it
+  is prompting about unsaved work — is left running and reported. Terminating a program discards work
+  with no prompt, which is a worse outcome than a slightly less lean machine.
+- **M5** — **A close is the one thing Quiesce does not undo, and it says so everywhere.** Restore lists
+  what was closed and does not relaunch it: relaunching would mean guessing the command line, and for a
+  browser it would restore the window without the tabs, which looks more like data loss than a restore.
+  The preflight dialog states it before you approve, the CLI states it as it happens, and `revert.cmd`
+  states it in the file.
+- **M5** — Reversible throttle. Priority is lowered, never raised, with the prior class captured **per
+  process** and written back exactly. Justified by measurement, not caution: on the development machine
+  one application's 14 processes sat at Normal, Idle *and* AboveNormal simultaneously, so restoring the
+  group to one value would have promoted the idle ones and demoted the busy one — and a byte-level check
+  would have called that clean.
+- **M5** — Process classification, ordered most-protective-first: the shell, system-critical processes,
+  the compositor and the audio graph; anything hosting a Windows service (so the process layer cannot
+  reach around the service guardrails, all of which are keyed on service names); anything under a game
+  or launcher root; and anything whose image path or creation time cannot be read, which resolves to
+  *leave it alone* rather than to a name-based guess.
+- **M5** — **Quiesce never closes or throttles whatever launched it**, matched by image path as well as
+  PID. This produces the right behaviour in production with no special case: launched from Explorer,
+  only Quiesce's own image is protected, so an application the catalog says to close still gets closed.
+- **M5** — Three application groups, each individually toggleable. Browsers are closed by default with
+  keeping them alive available as a toggle — the only irreversible thing in the shipped default profile,
+  gated behind a preflight that names every process by PID. Discord is untouched by default, with a
+  throttle-only toggle at `BelowNormal` rather than `Idle`: `Idle` means "runs only when nothing else
+  wants the CPU", which during a loading screen is exactly when a voice thread needs to run.
+- **M5** — Targeting is **path-based, not name-based**. Each group pairs an image name with the
+  directory the real installation lives under, so a `chrome.exe` in a temp directory is not treated as
+  the browser you meant. Fragments are delimited at both ends, so a group targeting `\Discord\` cannot
+  collect Discord Canary.
+- **M5** — A process group fans out to **one plan step per live process**, each with its own journal
+  record and its own prior. Processes that start after the plan is built are not touched: the preflight
+  list is what was approved, so it is what runs.
+- **M5** — `verify-revert` and `scripts/baseline-diff.ps1` both exclude entries that close applications,
+  and both say what they excluded. Each asserts a byte-identical round trip, which a close cannot
+  satisfy by construction — including one would have meant closing the operator's browser five times
+  over in order to assert nothing about it.
+
 ### Hardening (from the M4 adversarial guardrail review)
 
 - **Remote-session detection rewritten.** `GetSystemMetrics(SM_REMOTESESSION)` reports only on the
@@ -131,6 +172,35 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- **M5** — **A PID-based self-protection guard protected 2 of the host application's 14 processes.** A
+  Chromium-style application puts its renderers and helpers *beside* the process that spawned the child,
+  not above it, so the other 12 classified as ordinary and would have been throttled. Breaking 12 of 14
+  processes breaks the application just as thoroughly as touching the main one. Protection is now keyed
+  on image path as well as PID: measured at 14 of 14 refused, with zero priority drift.
+- **M5** — **Already-throttled processes were reported as guardrail refusals.** "Already at or below the
+  target" and "that would be a raise" are arithmetically the same condition, and only the first is a true
+  description — a process sitting at Idle is not something Quiesce is declining to touch, it is already
+  quieter than asked. The elision is now tested first, which is the M4 registry ordering lesson repeating
+  in the opposite direction.
+- **M5** — **The close ladder gave a generic reason for refusing its own host.** The self-protection class
+  existed and the throttler explained it properly, but the closer's switch had no arm for it, so the
+  refusal fell through to "not in a class Quiesce will close". The whole point of a distinct class is that
+  the user gets the true reason; a generic one reads like the app being arbitrary rather than the app
+  protecting the process performing the change.
+- **M5** — **A throttle could create an obligation Quiesce would refuse to discharge.** Lowering a process
+  from above the `AboveNormal` ceiling works fine, and then restore would have to raise it back past that
+  ceiling — which this codebase cannot even name, by design. Both ends are now closed: the throttle is
+  refused up front, and restore refuses a recorded prior above the ceiling rather than honouring a journal
+  that a later hand-edit could turn into an arbitrary-priority primitive.
+- **M5** — **The preflight dialog would have thrown on a process step.** The row builder tested for a
+  service prior and otherwise dereferenced the registry prior, so a step carrying neither was a null
+  reference in the middle of the dialog where the user approves changes.
+- **M5** — Residue from an entry rollback was discarded while the same residue on the revert path was
+  reported. Same fact, same obligation to state it: an unwind that leaves something behind and says
+  nothing is how a tool ends up having changed a machine it called clean.
+- **M5** — `tor` removed from the browser class. `tor.exe` is the SOCKS daemon, not the browser — Tor
+  Browser's UI process is `firefox.exe` — so acting on that name would have cut the browser's networking
+  out from under a window left standing.
 - **M4** — **A refused write left the machine unrevertable, forever.** The vetoed value was never created,
   so the captured prior was "absent" — and revert then tried to *delete* the absent value, which the same
   callback also refuses. The session reported `machine still DIRTY` over a value that had never changed,

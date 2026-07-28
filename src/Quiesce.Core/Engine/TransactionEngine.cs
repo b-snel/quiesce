@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Quiesce.Core.Catalog;
 using Quiesce.Core.Journal;
@@ -40,7 +41,9 @@ public sealed class TransactionEngine(
     QuiescePaths paths,
     EngineInfo info,
     IActivationCapture? activationCapture = null,
-    IServiceControl? services = null)
+    IServiceControl? services = null,
+    IProcessControl? processes = null,
+    ProcessClassifier? processClassifier = null)
 {
     private readonly StateStore _state = new(paths.DataRoot);
 
@@ -49,6 +52,29 @@ public sealed class TransactionEngine(
     /// capture (the Win32 one does), use it automatically.
     /// </summary>
     private readonly IActivationCapture? _capture = activationCapture ?? broadcaster as IActivationCapture;
+
+    /// <summary>
+    /// The close ladder and the throttle, built only when BOTH a process control and a classifier were
+    /// supplied.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not defaulted. A classifier constructed with no arguments knows no game directories,
+    /// no service host PIDs and nothing about what launched Quiesce, so defaulting one here would silently
+    /// produce an engine that acts on processes with its safety checks switched off — the exact bug the
+    /// <see cref="ProcessClassifier.ForMachine"/> factory exists to prevent. A half-wired engine refuses
+    /// process ops with a reason instead.
+    /// </remarks>
+    private readonly ProcessCloser? _closer = processes is not null && processClassifier is not null
+        ? new ProcessCloser(processes, processClassifier)
+        : null;
+
+    private readonly ProcessThrottler? _throttler = processes is not null && processClassifier is not null
+        ? new ProcessThrottler(processes, processClassifier)
+        : null;
+
+    private const string ProcessLayerUnavailable =
+        "Process control is unavailable in this build, or was wired without a classifier. " +
+        "Quiesce will not act on processes without its guardrails.";
 
     // ---------------------------------------------------------------- Plan
 
@@ -69,10 +95,28 @@ public sealed class TransactionEngine(
             ? catalog.Entries
             : catalog.Entries.Where(e => enabledIds.Contains(e.Id)).ToList();
 
+        // Process enumeration is one call for the whole plan, not one per op. Ten browser ops against
+        // ~270 processes would otherwise be ten full sweeps, and — worse — ten different answers, so two
+        // ops in the same entry could disagree about what is running.
+        var live = _closer is not null ? processes!.Enumerate() : [];
+
         foreach (var entry in entries)
         {
             foreach (var op in entry.Ops)
             {
+                // A process op describes a GROUP and yields one step per live member, so the step count
+                // is not known until the machine has been looked at. Registry and service ops yield
+                // exactly one step each, which is why this used to be a straight one-to-one loop.
+                if (op is ProcessOpSpec processOp)
+                {
+                    foreach (var step in PlanProcess(entry, processOp, live, () => ++stepId))
+                    {
+                        steps.Add(step);
+                    }
+
+                    continue;
+                }
+
                 stepId++;
                 steps.Add(op switch
                 {
@@ -85,6 +129,105 @@ public sealed class TransactionEngine(
 
         return new EngagePlan { Profile = profile, CatalogVersion = catalog.CatalogVersion, Steps = steps };
     }
+
+    /// <summary>
+    /// Projects one process group onto the live process list: one step per matching process.
+    /// </summary>
+    /// <remarks>
+    /// Refused members are emitted as refused steps rather than filtered out. During development every
+    /// process of the application hosting Quiesce matches and every one of them is refused, and seeing
+    /// that is the point — a group that silently shrank to nothing would look identical to a group that
+    /// had nothing to do.
+    /// </remarks>
+    private IEnumerable<PlannedStep> PlanProcess(
+        CatalogEntry entry,
+        ProcessOpSpec op,
+        IReadOnlyList<ProcessSnapshot> live,
+        Func<int> nextStepId)
+    {
+        PlannedStep Step(ProcessSnapshot? process, bool noOp, string? noOpDetail, string? refused) => new()
+        {
+            StepId = nextStepId(),
+            EntryId = entry.Id,
+            Scope = entry.Scope,
+            Op = op,
+            Target = process is null
+                ? op.TargetDescription
+                : $"{op.TargetDescription} — {process.ImageName} (pid {process.Identity.Pid})",
+            ProcessBefore = process,
+            ProcessAction = op.Action,
+            IntendedPriority = op.ThrottleTo is { } level ? ProcessThrottler.ToPriorityClass(level) : null,
+            Activation = entry.Activation,
+            NoOp = noOp,
+            NoOpDetail = noOpDetail,
+            RefusedReason = refused,
+        };
+
+        if (_closer is null || _throttler is null)
+        {
+            yield return Step(null, noOp: false, noOpDetail: null, refused: ProcessLayerUnavailable);
+            yield break;
+        }
+
+        var matches = live.Where(p => op.Matches(p.ImageName, p.ImagePath)).ToList();
+
+        // Nothing running is a first-class outcome, exactly like a service that is absent on this build.
+        // Reported as a no-op WITH a reason, because "already lean" is the wrong sentence for it.
+        if (matches.Count == 0)
+        {
+            yield return Step(
+                null,
+                noOp: true,
+                noOpDetail: $"nothing matching {op.ImageName} is running",
+                refused: null);
+            yield break;
+        }
+
+        foreach (var process in matches)
+        {
+            // ORDER MATTERS, the same way it does in PlanRegistry and for the same reason. A process
+            // already at or below the target needs no write, and the throttler's refusal for that case is
+            // "this would be a raise" - true of the arithmetic, false as a description of the situation.
+            // A process sitting at Idle is not something Quiesce is declining to touch; it is already
+            // quieter than asked. Getting this backwards reported every already-throttled process as a
+            // guardrail refusal.
+            if (op.Action == Catalog.ProcessAction.Throttle
+                && op.ThrottleTo is { } level
+                && ProcessThrottler.IsAtOrBelow(process.PriorityClass, ProcessThrottler.ToPriorityClass(level)))
+            {
+                // Elided for the same reason an already-lean registry value is: nothing is written, so
+                // restore can never put back a priority the user chose themselves.
+                yield return Step(
+                    process,
+                    noOp: true,
+                    noOpDetail: $"already at {process.PriorityClass}",
+                    refused: null);
+                continue;
+            }
+
+            if (Refuse(process, op, out var reason))
+            {
+                yield return Step(process, noOp: false, noOpDetail: null, refused: reason);
+                continue;
+            }
+
+            yield return Step(process, noOp: false, noOpDetail: null, refused: null);
+        }
+    }
+
+    /// <summary>
+    /// Plan-time refusal for one process, asked of the very objects that will act at apply time.
+    /// </summary>
+    /// <remarks>
+    /// Not a copy of the rule — the same method the closer and the throttler consult before they act, so
+    /// the reason shown in the preflight list cannot drift from the reason the apply would give. Both
+    /// re-check at apply time regardless: the machine is live, and the check that protects it is the
+    /// second one.
+    /// </remarks>
+    private bool Refuse(ProcessSnapshot process, ProcessOpSpec op, out string reason) =>
+        op.Action == Catalog.ProcessAction.Throttle && op.ThrottleTo is { } level
+            ? _throttler!.WouldRefuse(process, ProcessThrottler.ToPriorityClass(level), out reason)
+            : _closer!.WouldRefuse(process, out reason);
 
     private PlannedStep PlanRegistry(int stepId, CatalogEntry entry, RegistryOpSpec op)
     {
@@ -220,6 +363,8 @@ public sealed class TransactionEngine(
                 Scope = step.Scope,
                 Target = step.Target,
                 IntendedNew = step.IntendedNew,
+                Process = step.ProcessBefore?.ToPrior(),
+                IntendedProcessAction = step.ProcessAction,
                 Activation = step.Activation,
             });
         }
@@ -232,6 +377,7 @@ public sealed class TransactionEngine(
         var skipped = plan.Steps.Count(s => s.NoOp);
         var rolledBackEntries = new List<string>();
         var diagnoses = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var notes = new List<string>();
 
         foreach (var entryGroup in effective.GroupBy(s => s.EntryId))
         {
@@ -240,6 +386,46 @@ public sealed class TransactionEngine(
 
             foreach (var step in entryGroup)
             {
+                if (step.Op is ProcessOpSpec processOp)
+                {
+                    var outcome = ApplyProcess(journal, revertScript, step, processOp, fault);
+
+                    if (outcome.Note is { } note)
+                    {
+                        notes.Add(note);
+                    }
+
+                    if (outcome.Failure is { } processFailure)
+                    {
+                        RollBackEntry(journal, entryGroup.Key, appliedInEntry, outcome.Applied, processFailure);
+                        rolledBackEntries.Add(entryGroup.Key);
+                        diagnoses[entryGroup.Key] = processFailure;
+                        entryFailed = true;
+                        break;
+                    }
+
+                    if (outcome.Applied is { } appliedProcess)
+                    {
+                        appliedInEntry.Add(appliedProcess);
+                        applied++;
+                        continue;
+                    }
+
+                    if (outcome.AppliedWithoutUndo)
+                    {
+                        // Counted, but never added to the rollback set: a closed application cannot be
+                        // reopened, so an entry that fails later must not try.
+                        applied++;
+                        continue;
+                    }
+
+                    // Neither applied nor failed: asked and declined, or refused since the plan was
+                    // built. Deliberately NOT counted as an already-lean elision - the machine is not in
+                    // the state the plan described, and the note above says which application and why.
+                    skipped++;
+                    continue;
+                }
+
                 if (step.Op is ServiceOpSpec serviceOp)
                 {
                     var outcome = ApplyService(journal, revertScript, step, serviceOp, fault);
@@ -379,6 +565,173 @@ public sealed class TransactionEngine(
             SkippedNoop = skipped,
             RolledBackEntries = rolledBackEntries,
             Diagnoses = diagnoses,
+            Notes = notes,
+        };
+    }
+
+    /// <summary>
+    /// Applies one process step: journal the prior, then close or throttle, then verify.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A CLOSE THAT DOES NOT HAPPEN IS NOT A FAILURE. If an application declines — almost always because
+    /// it is showing a "save your work?" prompt — or if a guardrail refuses it now that did not refuse it
+    /// at plan time, then nothing was done and the process is exactly as it was found. That is a
+    /// consistent machine state, not a half-applied entry, so it must not trigger a rollback: there is no
+    /// rollback for a close in any case, and treating "left running" as a failure would roll back the
+    /// applications that <em>did</em> close, which is impossible, or fail the entry over an outcome the
+    /// graceful ladder is specifically designed to accept.
+    /// </para>
+    /// <para>
+    /// A throttle is different and does fail its entry, because a throttle genuinely can be put back.
+    /// That asymmetry is why the catalog loader refuses an entry mixing the two actions.
+    /// </para>
+    /// </remarks>
+    private ProcessApplyOutcome ApplyProcess(
+        JournalWriter journal,
+        RevertScriptWriter revertScript,
+        PlannedStep step,
+        ProcessOpSpec op,
+        FaultInjector fault)
+    {
+        if (_closer is null || _throttler is null || step.ProcessBefore is not { } planned)
+        {
+            return new ProcessApplyOutcome { Failure = ProcessLayerUnavailable };
+        }
+
+        // Re-read by identity. A PID that now belongs to a different process reports Present = false, so
+        // the recycling case lands here as "gone" rather than as an action against a stranger.
+        var live = processes!.Query(planned.Identity);
+        if (!live.Present)
+        {
+            return new ProcessApplyOutcome
+            {
+                Skipped = true,
+                Note = $"{planned.ImageName} (pid {planned.Identity.Pid}) exited before Quiesce asked.",
+            };
+        }
+
+        // Whether the write-ahead record actually reached disk. A refusal that happens before any write
+        // journals nothing, and an `applied` line for a step with no `applying` line would be a journal
+        // that describes a mutation that never existed.
+        ProcessPriorityClass? journalledPrior = null;
+        var journalled = false;
+
+        void JournalPrior(ProcessPrior prior, string? intendedPriority)
+        {
+            journalled = true;
+
+            journal.Append(new ApplyingRecord
+            {
+                StepId = step.StepId,
+                EntryId = step.EntryId,
+                Scope = step.Scope,
+                Target = step.Target,
+                Process = prior,
+                IntendedProcessAction = op.Action,
+                IntendedPriority = intendedPriority,
+                Activation = step.Activation,
+            });
+
+            revertScript.AppendProcessNote(step.StepId, prior, op.Action, intendedPriority);
+        }
+
+        if (op.Action == Catalog.ProcessAction.Throttle)
+        {
+            var target = ProcessThrottler.ToPriorityClass(op.ThrottleTo!.Value);
+
+            // The prior goes to disk from inside the throttler, between its read and its write, so the
+            // journalled value is the one the write actually raced against rather than a second reading
+            // of the same fact.
+            var outcome = _throttler.Throttle(
+                live.Identity,
+                target,
+                beforeWrite: prior =>
+                {
+                    journalledPrior = prior;
+                    JournalPrior(live.ToPrior() with { PriorityClass = prior.ToString() }, target.ToString());
+                });
+
+            if (!outcome.Succeeded)
+            {
+                // A throttle that did not stick fails its entry: reporting it as applied would leave
+                // Restore obliged to write back a priority the process never actually had.
+                if (journalled)
+                {
+                    journal.Append(new AppliedRecord { StepId = step.StepId, Verify = $"ThrottleFailed: {outcome.Detail}" });
+                }
+
+                return new ProcessApplyOutcome
+                {
+                    Failure = $"ThrottleFailed: {outcome.Detail}",
+
+                    // Handed to the rollback ONLY when a write was actually attempted. SetPriorityClass can
+                    // report success while the re-read disagrees, which means the class may have moved even
+                    // though the step failed - so the failing step has to be unwound with the rest.
+                    Applied = journalledPrior is { } prior
+                        ? AppliedStep.ForThrottle(step, live, prior)
+                        : null,
+                };
+            }
+
+            if (outcome.NoOp)
+            {
+                return new ProcessApplyOutcome
+                {
+                    Skipped = true,
+                    Note = $"{live.ImageName} (pid {live.Identity.Pid}) was already at {target}.",
+                };
+            }
+
+            journal.Append(new AppliedRecord { StepId = step.StepId, Verify = "ok" });
+            fault.AfterStepApplied(step.StepId);
+
+            return new ProcessApplyOutcome
+            {
+                Applied = AppliedStep.ForThrottle(step, live, outcome.Prior!.Value),
+            };
+        }
+
+        // Write-ahead before the close for the same reason as everywhere else: the request may succeed and
+        // the machine may then lose power, and the record of what was closed is the only thing Restore can
+        // report from.
+        JournalPrior(live.ToPrior(), intendedPriority: null);
+
+        var closed = _closer.Close(live.Identity);
+        journal.Append(new AppliedRecord
+        {
+            StepId = step.StepId,
+            Verify = closed.Succeeded ? "ok" : $"{closed.Result}: {closed.Detail}",
+        });
+
+        if (!closed.Succeeded)
+        {
+            return new ProcessApplyOutcome
+            {
+                Skipped = true,
+                Note = closed.Result switch
+                {
+                    ProcessCloseResult.DeclinedToClose =>
+                        $"{live.ImageName} (pid {live.Identity.Pid}) was asked to close and is still running. " +
+                        "It is most likely prompting about unsaved work; Quiesce leaves that alone.",
+                    ProcessCloseResult.NoWindow =>
+                        $"{live.ImageName} (pid {live.Identity.Pid}) has no window to send a close request to, " +
+                        "and Quiesce has no less polite option.",
+                    ProcessCloseResult.Refused =>
+                        $"{live.ImageName} (pid {live.Identity.Pid}) was not closed: {closed.Detail}",
+                    _ => $"{live.ImageName} (pid {live.Identity.Pid}): {closed.Result} — {closed.Detail}",
+                },
+            };
+        }
+
+        fault.AfterStepApplied(step.StepId);
+
+        return new ProcessApplyOutcome
+        {
+            // No AppliedStep, because a close cannot be rolled back and must never enter the rollback
+            // set - but real work all the same, so it is counted and stated plainly.
+            AppliedWithoutUndo = true,
+            Note = $"closed {live.ImageName} (pid {live.Identity.Pid}). Restore will not reopen it.",
         };
     }
 
@@ -617,6 +970,114 @@ public sealed class TransactionEngine(
         }
     }
 
+    /// <summary>
+    /// Reverts one journalled process step: put a priority back, or report a close that has no undo.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The only step kind whose revert can be honest and still not restore anything. A close is reported
+    /// and counted as reverted, because it is discharged as far as it can ever be — refusing to close the
+    /// session over it would leave the machine permanently dirty over an application the user can simply
+    /// reopen, which is the wedge this project has already fixed twice. The report is what makes that
+    /// acceptable: silent residue is how a tool ends up having changed a machine it called clean.
+    /// </para>
+    /// <para>
+    /// A throttle round-trips exactly, with the same conflict rule as the registry and service paths: if
+    /// the class is no longer what Quiesce set, something else changed it since and the current value is
+    /// kept rather than overwritten with a stale capture.
+    /// </para>
+    /// </remarks>
+    private void RevertProcessStep(
+        JournalWriter journal,
+        ApplyingRecord step,
+        ProcessPrior prior,
+        List<string> messages,
+        ref int reverted,
+        ref int failed)
+    {
+        var identity = prior.ToIdentity();
+        var name = $"{prior.ImageName} (pid {prior.Pid})";
+
+        if (step.IntendedProcessAction == Catalog.ProcessAction.Close)
+        {
+            // Present means it never actually closed - it declined, or the close was refused after the
+            // record was written. Nothing was done, so there is nothing to undo.
+            var stillRunning = processes is not null && processes.Query(identity).Present;
+
+            if (!stillRunning)
+            {
+                messages.Add(
+                    $"step {step.StepId} ({name}): was closed. Quiesce does not relaunch applications - " +
+                    "reopen it yourself. Nothing else about it was changed.");
+            }
+
+            journal.Append(new RevertedRecord
+            {
+                StepId = step.StepId,
+                Outcome = stillRunning ? "not-closed-nothing-to-do" : "closed-not-relaunched",
+            });
+
+            reverted++;
+            return;
+        }
+
+        if (_throttler is null || processes is null)
+        {
+            messages.Add($"step {step.StepId} ({name}): process control unavailable; cannot restore its priority.");
+            failed++;
+            return;
+        }
+
+        // A class name the journal carries but this build cannot parse. Refuse rather than guess: the
+        // alternative is writing some other priority onto a live process and calling it a restore.
+        if (prior.PriorityClass is not { } priorName
+            || !Enum.TryParse<ProcessPriorityClass>(priorName, ignoreCase: true, out var priorClass))
+        {
+            messages.Add(
+                $"step {step.StepId} ({name}): the journal records prior priority " +
+                $"'{prior.PriorityClass ?? "<none>"}', which this build cannot interpret. Left as it is; " +
+                "restarting the application clears any throttle.");
+            failed++;
+            return;
+        }
+
+        var live = processes.Query(identity);
+
+        if (live.Present
+            && step.IntendedPriority is { } intendedName
+            && Enum.TryParse<ProcessPriorityClass>(intendedName, ignoreCase: true, out var intended)
+            && live.PriorityClass != intended
+            && live.PriorityClass != priorClass)
+        {
+            messages.Add(
+                $"step {step.StepId} ({name}): priority changed since apply (now {live.PriorityClass}); " +
+                "kept current rather than overwriting it.");
+            journal.Append(new RevertedRecord { StepId = step.StepId, Outcome = "conflict-kept-current" });
+            reverted++;
+            return;
+        }
+
+        var outcome = _throttler.Restore(identity, priorClass);
+
+        if (!outcome.Succeeded)
+        {
+            messages.Add($"step {step.StepId} ({name}): {outcome.Detail}");
+            failed++;
+            return;
+        }
+
+        journal.Append(new RevertedRecord
+        {
+            StepId = step.StepId,
+
+            // An exited process is a clean outcome, not a partial one: a priority class does not outlive
+            // the process, so there is genuinely nothing left behind.
+            Outcome = outcome.NoOp ? "restored-nothing-to-do" : "restored",
+        });
+
+        reverted++;
+    }
+
     /// <summary>Renders a refused registry write as a diagnosis that can actually be acted on.</summary>
     /// <remarks>
     /// The first version returned a fixed sentence that discarded the exception and offered "the
@@ -654,6 +1115,18 @@ public sealed class TransactionEngine(
         if (applied.Service is { } service && applied.ServicePrior is { } servicePrior && services is not null)
         {
             RestoreService(service, servicePrior);
+        }
+
+        // A throttle is the only process work that has an inverse. A close never reaches here at all -
+        // ApplyProcess deliberately returns no AppliedStep for one - so there is no branch to write.
+        if (applied.Process is { } identity && applied.ProcessPriorPriority is { } priorPriority)
+        {
+            var outcome = _throttler?.Restore(identity, priorPriority);
+
+            if (outcome is { Succeeded: false })
+            {
+                return $"could not put {applied.ProcessImageName} back to {priorPriority} ({outcome.Detail})";
+            }
         }
 
         return null;
@@ -694,17 +1167,25 @@ public sealed class TransactionEngine(
             .Reverse()
             .ToList();
         var undone = new List<int>();
+        var residues = new List<string>();
 
         foreach (var undo in toUndo)
         {
-            UndoApplied(undo);
+            // Residue was previously discarded here, while the revert path reported it. Same fact, same
+            // obligation to say it out loud: an unwind that left something behind and said nothing is how
+            // a tool ends up having changed a machine it reported clean.
+            if (UndoApplied(undo) is { } residue)
+            {
+                residues.Add($"step {undo.StepId}: {residue}");
+            }
+
             undone.Add(undo.StepId);
         }
 
         journal.Append(new EntryRolledBackRecord
         {
             EntryId = entryId,
-            Reason = reason,
+            Reason = residues.Count == 0 ? reason : $"{reason} [{string.Join("; ", residues)}]",
             RolledBackSteps = undone,
         });
     }
@@ -749,12 +1230,16 @@ public sealed class TransactionEngine(
         var broadcasts = new HashSet<ActivationKind>();
         var stateReplays = new List<ActivationState>();
 
-        // Dependency order, not naive reverse: services and power first, then registry, then
-        // activation broadcasts. Unwinding strictly newest-first would restore registry values that
+        // Dependency order, not naive reverse: services and power first, then registry, then processes,
+        // then activation broadcasts. Unwinding strictly newest-first would restore registry values that
         // a service reads at startup *after* restarting that service, so it would come back having
         // read the tweaked value. Within a kind, newest-first still holds.
+        //
+        // Processes last only because nothing depends on them in either direction — a priority class is
+        // not read by anything else — and it puts the one kind of step that cannot fully round-trip at the
+        // end of the report, where the caveats belong.
         var ordered = pending
-            .OrderBy(s => s.Service is not null ? 0 : 1)
+            .OrderBy(s => s.Service is not null ? 0 : s.Process is not null ? 2 : 1)
             .ThenByDescending(s => s.StepId)
             .ToList();
 
@@ -763,6 +1248,12 @@ public sealed class TransactionEngine(
             if (step.Service is { } serviceName)
             {
                 RevertServiceStep(journal, step, serviceName, rebootedSinceApply, messages, ref reverted, ref failed);
+                continue;
+            }
+
+            if (step.Process is { } processPrior)
+            {
+                RevertProcessStep(journal, step, processPrior, messages, ref reverted, ref failed);
                 continue;
             }
 

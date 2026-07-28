@@ -39,11 +39,38 @@ public sealed record PlannedStep
 
     public bool IntendedStop { get; init; }
 
+    // --- process ops --------------------------------------------------------
+
+    /// <summary>
+    /// The one live process this step acts on, resolved at plan time.
+    /// </summary>
+    /// <remarks>
+    /// One step per process, not one per group: the preflight list has to name every application by PID
+    /// before any of them is asked to close, and each process needs its own journal record because each
+    /// has its own prior. It also fixes the target set at plan time, so a process that starts between
+    /// the preflight dialog and the apply is not touched — what the user approved is what runs.
+    /// </remarks>
+    public ProcessSnapshot? ProcessBefore { get; init; }
+
+    public ProcessAction? ProcessAction { get; init; }
+
+    public System.Diagnostics.ProcessPriorityClass? IntendedPriority { get; init; }
+
     /// <summary>
     /// Set when a guardrail refused this step. Refused steps are shown to the user with the reason
     /// and never applied — visible refusal, not silent omission.
     /// </summary>
     public string? RefusedReason { get; init; }
+
+    /// <summary>
+    /// Why this step is a no-op, when "already lean" would be the wrong words.
+    /// </summary>
+    /// <remarks>
+    /// Registry and service steps elide because the machine already holds the target value, and
+    /// "already lean" says that well. A process group elides because nothing it names is running, which
+    /// is a different fact and reads as nonsense under the same label. Null keeps the default wording.
+    /// </remarks>
+    public string? NoOpDetail { get; init; }
 
     public required IReadOnlyList<ActivationKind> Activation { get; init; }
 
@@ -74,6 +101,15 @@ public sealed record AppliedStep
 
     public ServiceSnapshot? ServicePrior { get; init; }
 
+    public ProcessIdentity? Process { get; init; }
+
+    public string? ProcessImageName { get; init; }
+
+    /// <summary>
+    /// The class to write back. Null for a close, which has no undo at all.
+    /// </summary>
+    public System.Diagnostics.ProcessPriorityClass? ProcessPriorPriority { get; init; }
+
     public static AppliedStep ForRegistry(PlannedStep step, RegistryTarget target, RegistryProbe prior) => new()
     {
         StepId = step.StepId,
@@ -87,6 +123,25 @@ public sealed record AppliedStep
         Service = service,
         ServicePrior = prior,
     };
+
+    /// <summary>
+    /// A throttle that was applied, and so can be rolled back.
+    /// </summary>
+    /// <remarks>
+    /// There is deliberately no equivalent for a close. Nothing unwinds "the application exited", so a
+    /// close never enters the rollback set — which is also why the catalog loader refuses an entry that
+    /// mixes the two.
+    /// </remarks>
+    public static AppliedStep ForThrottle(
+        PlannedStep step,
+        ProcessSnapshot process,
+        System.Diagnostics.ProcessPriorityClass prior) => new()
+    {
+        StepId = step.StepId,
+        Process = process.Identity,
+        ProcessImageName = process.ImageName,
+        ProcessPriorPriority = prior,
+    };
 }
 
 /// <summary>Result of applying one service step.</summary>
@@ -98,6 +153,37 @@ public sealed record ServiceApplyOutcome
     public string? Failure { get; init; }
 
     public AppliedStep? Applied { get; init; }
+}
+
+/// <summary>Result of applying one process step.</summary>
+/// <remarks>
+/// Has a <see cref="Note"/> where the service outcome does not, because a process step has a third
+/// ending that is neither success nor failure: the application was asked to close and declined, or a
+/// guardrail refused it after the plan was built. Nothing happened and nothing needs undoing, so it is
+/// not a failure — but it is also not "already lean", and the user has to be told which of their
+/// applications is still running and why.
+/// </remarks>
+public sealed record ProcessApplyOutcome
+{
+    public bool Skipped { get; init; }
+
+    /// <summary>Non-null when the step failed and its entry must roll back.</summary>
+    public string? Failure { get; init; }
+
+    public AppliedStep? Applied { get; init; }
+
+    /// <summary>
+    /// The step did real work that has no undo, so it counts as applied but must not be rolled back.
+    /// </summary>
+    /// <remarks>
+    /// Only a successful close. Putting one in the rollback set would be meaningless — nothing unwinds
+    /// "the application exited" — but counting it as skipped would be a lie: an application the user was
+    /// using is gone, and the summary has to say so.
+    /// </remarks>
+    public bool AppliedWithoutUndo { get; init; }
+
+    /// <summary>Surfaced verbatim to the user. Never a silent omission.</summary>
+    public string? Note { get; init; }
 }
 
 public sealed record EngagePlan
@@ -125,6 +211,18 @@ public sealed record EngageResult
     public required int SkippedNoop { get; init; }
 
     public required IReadOnlyList<string> RolledBackEntries { get; init; }
+
+    /// <summary>
+    /// Things the user must be told that are neither an applied step nor a failure.
+    /// </summary>
+    /// <remarks>
+    /// Two kinds so far, both from process ops: an application that was asked to close and did not
+    /// (almost always a "save your work?" prompt, which the graceful ladder exists to respect), and an
+    /// application that <em>was</em> closed and will not be reopened by Restore. The second is the more
+    /// important one — it is the only thing Quiesce does that its undo does not cover, so it has to be
+    /// said at the moment it happens rather than discovered later.
+    /// </remarks>
+    public IReadOnlyList<string> Notes { get; init; } = [];
 
     /// <summary>
     /// Why each rolled-back entry failed, keyed by entry id. Surfaced verbatim so that a refusal by
