@@ -27,6 +27,12 @@
          16/24/32/48/64/128/256 - the glowing rings read on both light and dark taskbars. -->
     <Resource Include="Assets\logo-dark.png" />
     <Resource Include="Assets\logo-light.png" />
+
+    <!-- The .ico is ALSO a Resource, not only <ApplicationIcon>. ApplicationIcon embeds it in the PE for
+         Explorer to draw; it does not make it reachable by a pack:// URI, so the tray icon's XAML would
+         throw at load - after a UAC prompt, with no window and no error message. And no test catches that,
+         because no test constructs MainWindow. -->
+    <Resource Include="Assets\quiesce.ico" />
   </ItemGroup>
 
   <ItemGroup>

@@ -305,6 +305,20 @@ public partial class DashboardPage
     /// indistinguishable from a button that is broken, and "checked, still matching" is a real answer.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// Runs the same re-check the button does, for the tray's "Check sync…" item.
+    /// </summary>
+    /// <remarks>
+    /// Delegates rather than duplicates, so the tray path and the button path cannot diverge — and so the
+    /// tray never runs the engine from a menu callback. It also raises the resync preflight when there is
+    /// something to resync, which is what makes "Check sync…" useful from the tray rather than merely
+    /// informative.
+    /// </remarks>
+    internal void RequestRecheck()
+    {
+        OnRecheck(this, new RoutedEventArgs());
+    }
+
     private async void OnRecheck(object sender, RoutedEventArgs e)
     {
         SetBusy(true);

@@ -496,6 +496,33 @@ public class ViewConstructionTests
     }
 
     [Fact]
+    public void The_tray_icon_asset_is_reachable_by_its_pack_uri()
+    {
+        // The failure this prevents has no symptom you could debug from. Assets\quiesce.ico was
+        // <ApplicationIcon> only - which embeds it in the PE for Explorer to draw and does NOT make it
+        // reachable by a pack:// URI - so the tray would throw at icon load, AFTER the UAC prompt, with no
+        // window and no error. And nothing caught it, because no test constructs MainWindow.
+        //
+        // Loaded for real rather than asserted about the csproj: the question is whether the URI resolves,
+        // and only resolving it answers that.
+        //
+        // ASSEMBLY-QUALIFIED, and finding out why cost a wrong diagnosis. The short /Assets/... form resolves
+        // against the ENTRY assembly - Quiesce.dll in production, the test host under `dotnet test` - so it
+        // works in the app and throws here, which briefly looked like the resource being missing when the
+        // resource was fine. TrayIcon now uses this same string, so this test exercises what the app runs.
+        var loaded = OnStaThread(() =>
+        {
+            var image = new System.Windows.Media.Imaging.BitmapImage(
+                new Uri("pack://application:,,,/Quiesce;component/Assets/quiesce.ico", UriKind.Absolute));
+
+            return (image.PixelWidth, image.PixelHeight);
+        });
+
+        Assert.True(loaded.PixelWidth > 0, "the .ico resolved but decoded to nothing");
+        Assert.True(loaded.PixelHeight > 0);
+    }
+
+    [Fact]
     public void The_keys_referenced_only_from_XAML_resolve()
     {
         // StateWarningBrush and StateNeutralBrush have no enum to enumerate: they are named from

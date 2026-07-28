@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows.Controls;
 using Quiesce.App.Views;
 
@@ -62,6 +63,93 @@ public partial class MainWindow
         RenderRebootBanner();
         RenderDriftBanner();
     }
+
+    /// <summary>
+    /// Brings the window up from the tray, optionally on a page and optionally re-checking drift.
+    /// </summary>
+    /// <remarks>
+    /// <c>Show</c> before <c>WindowState</c> before <c>Activate</c>, in that order: a hidden window ignores an
+    /// Activate, and a minimized one comes back where it was rather than to the front.
+    /// <para>
+    /// The re-check is delegated to the Dashboard's own button rather than reimplemented, so the tray path and
+    /// the button path cannot diverge — and so the mutation gate stays in one place.
+    /// </para>
+    /// </remarks>
+    public void ShowFromTray(string? navigateTo = null, bool recheck = false)
+    {
+        Show();
+
+        if (WindowState == System.Windows.WindowState.Minimized)
+        {
+            WindowState = System.Windows.WindowState.Normal;
+        }
+
+        Activate();
+
+        if (navigateTo is not null && _factories.ContainsKey(navigateTo))
+        {
+            Nav.SelectedItem = navigateTo;
+        }
+
+        // Refused while a mutation is in flight, the same as InvalidatePages: a preflight may be open on this
+        // very page, and re-entering its handlers from a tray click is the race App.Mutating exists for.
+        if (recheck && !App.Mutating && PageHost.Content is DashboardPage dashboard)
+        {
+            dashboard.RequestRecheck();
+        }
+    }
+
+    /// <summary>
+    /// Hides to the notification area instead of exiting, when that is the user's preference.
+    /// </summary>
+    /// <remarks>
+    /// Reads the setting at close time rather than caching it, so toggling it on the Settings page takes
+    /// effect on the next close without a restart. A failure to read it falls back to EXITING, which is the
+    /// behaviour the app had before the tray existed — never to hiding, because a window that will not close
+    /// and cannot say why is worse than one that closes when the user did not expect it.
+    /// </remarks>
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+
+        var hide = false;
+        try
+        {
+            hide = new Core.Journal.SettingsStore(_state.DataRoot).Load().CloseToNotificationArea;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                      or Core.Journal.StateUnreadableException
+                                      or Core.Journal.JournalFormatException)
+        {
+            hide = false;
+        }
+
+        if (hide && !_exiting)
+        {
+            e.Cancel = true;
+            Hide();
+
+            if (System.Windows.Application.Current is App app)
+            {
+                app.RenderTray();
+            }
+
+            return;
+        }
+
+        base.OnClosing(e);
+    }
+
+    /// <summary>
+    /// Set when the app is shutting down for real, so the close handler stops intercepting.
+    /// </summary>
+    /// <remarks>
+    /// Without it, Exit from the tray menu calls Shutdown, WPF closes the window, and this handler cancels
+    /// the close — an application that cannot be quit from the only menu that offers to quit it.
+    /// </remarks>
+    private bool _exiting;
+
+    internal void PrepareToExit() => _exiting = true;
 
     /// <summary>
     /// Shows the outstanding-restart warning, naming the entries waiting on one.
