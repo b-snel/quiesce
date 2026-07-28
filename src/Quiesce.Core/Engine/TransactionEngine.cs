@@ -1612,7 +1612,40 @@ public sealed class TransactionEngine(
     /// Reverts a session from its journal. Never touches the catalog — the records are the truth.
     /// Idempotent: a crash mid-revert is survivable by running it again.
     /// </summary>
-    public RevertResult RevertSession(Guid sessionId, string initiator)
+    /// <param name="onlyScope">
+    /// When set, reverts ONLY the steps of that scope and leaves the rest applied.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// <paramref name="onlyScope"/> exists for exactly one caller — <see cref="Recover"/> after a reboot —
+    /// and it fixes a bug that made the Startup feature's central promise false. Recovery is supposed to
+    /// auto-revert <see cref="TweakScope.Session"/> steps once the boot has passed and leave
+    /// <see cref="TweakScope.Persistent"/> standing preferences alone; its own comment says so. But it
+    /// implemented that by handing the WHOLE session to this method, which had no scope filter, so the
+    /// distinction existed only when a session happened to be entirely one scope or entirely the other.
+    /// </para>
+    /// <para>
+    /// The mixed session is the NORMAL case, not an edge case: <c>apps.close-browsers</c> is in
+    /// <c>ProfileStore.BuiltInDefault</c> and a close journals <c>Scope = Session</c>, so any default
+    /// profile plus one sign-in preference is mixed. Engage, reboot, and the standing preference the user
+    /// set was silently put back — while <c>StartupPage</c> told them, in as many words, "This one stays
+    /// in force across reboots."
+    /// </para>
+    /// <para>
+    /// A FILTERED REVERT NEVER CLEARS <c>IsDirty</c>, and that is the part a naive fix gets wrong.
+    /// <see cref="RevertResult.Clean"/> is <c>Deferred == 0 &amp;&amp; Failed == 0</c> — it says nothing
+    /// about completeness — so a filtered run that reverted its half perfectly reports Clean while the
+    /// other half is still on the machine. Clearing the flag on that would strand the persistent steps
+    /// with no session marked dirty, which is the one state none of the four recovery nets look for.
+    /// </para>
+    /// <para>
+    /// It also appends no <c>revertComplete</c> record, for the same reason and one more:
+    /// <c>baseline-diff.ps1</c> detects an outstanding session as <c>applied &gt; 0 &amp;&amp;
+    /// revertComplete == 0</c>, so writing one would make a half-reverted session look finished to the
+    /// script whose whole job is to refuse to run over one.
+    /// </para>
+    /// </remarks>
+    public RevertResult RevertSession(Guid sessionId, string initiator, TweakScope? onlyScope = null)
     {
         var sessionDir = paths.SessionDir(sessionId);
         var journalPath = Path.Combine(sessionDir, "journal.jsonl");
@@ -1641,7 +1674,16 @@ public sealed class TransactionEngine(
             messages.Add("Journal has a torn final line (crash mid-append). Proceeding with the intact records.");
         }
 
-        var pending = PendingSteps(read.Records);
+        var allPending = PendingSteps(read.Records);
+
+        // Filtered here rather than inside PendingSteps: that method is the definition of "applied and not
+        // yet reverted" and is read by the drift detector and by RevertAll's outstanding-session check,
+        // both of which must keep seeing everything.
+        var pending = onlyScope is { } scope
+            ? allPending.Where(s => s.Scope == scope).ToList()
+            : allPending;
+
+        var leftApplied = allPending.Count - pending.Count;
 
         // Whether this revert is running in a different boot from the apply. It changes what
         // "restore the running state" can honestly mean for services.
@@ -1816,7 +1858,21 @@ public sealed class TransactionEngine(
             broadcaster.Broadcast(kind);
         }
 
-        journal.Append(new RevertCompleteRecord { Reverted = reverted, Deferred = deferred, Failed = failed });
+        // Not written for a filtered revert. The session is genuinely not complete - steps of the other
+        // scope are still applied - and baseline-diff.ps1 keys "is a session outstanding" on
+        // applied > 0 && revertComplete == 0, so claiming completion here would let it baseline over a
+        // machine still holding changes.
+        if (onlyScope is null)
+        {
+            journal.Append(new RevertCompleteRecord { Reverted = reverted, Deferred = deferred, Failed = failed });
+        }
+
+        if (leftApplied > 0)
+        {
+            messages.Add(
+                $"{leftApplied} step(s) of the other scope were left applied on purpose: this was a " +
+                $"{onlyScope}-only revert. The machine stays engaged until they are reverted too.");
+        }
 
         var result = new RevertResult
         {
@@ -1839,7 +1895,15 @@ public sealed class TransactionEngine(
             // Only this session's own dirty flag, and only on a clean revert - unchanged from before.
             // `updated with` rather than a fresh QuiesceState so the marker just set (or one already
             // there from an earlier session) is not wiped by the clear.
-            if (result.Clean && (state.ActiveSessionId == sessionId || state.ActiveSessionId is null))
+            //
+            // AND NEVER WHEN STEPS WERE LEFT APPLIED. Clean means "nothing deferred and nothing failed",
+            // which says nothing about completeness: a scope-filtered revert that put its own half back
+            // perfectly is Clean with the other half still on the machine. Clearing the flag there would
+            // leave persistent steps applied and no session marked dirty - the one state none of the four
+            // recovery nets goes looking for, because every one of them keys on isDirty.
+            if (result.Clean
+                && leftApplied == 0
+                && (state.ActiveSessionId == sessionId || state.ActiveSessionId is null))
             {
                 updated = updated with { IsDirty = false, ActiveSessionId = null };
             }
@@ -1927,12 +1991,18 @@ public sealed class TransactionEngine(
         // Committed and dirty = engaged steady state. Session-scoped steps whose boot has passed
         // are auto-reverted (the gaming session is over, whatever it was); persistent-scoped
         // steps are standing preferences and are never auto-reverted by recovery.
+        //
+        // The scope filter is what makes that second clause true. It used to hand the WHOLE session to
+        // RevertSession, which had no filter - so the sentence above described the intent and the code did
+        // something else whenever a session held both scopes. Which is the normal case:
+        // apps.close-browsers is in the built-in default profile and journals Scope = Session, so a default
+        // profile plus one sign-in preference is mixed, and a reboot silently undid the preference.
         var rebootedSince = sessionStart is not null && !QuiescePaths.IsSameBoot(sessionStart.BootId);
         var pendingScopes = PendingSteps(read.Records).Select(s => s.Scope).Distinct().ToList();
 
         if (rebootedSince && pendingScopes.Contains(TweakScope.Session))
         {
-            return RevertSession(sessionId, "recover");
+            return RevertSession(sessionId, "recover", onlyScope: TweakScope.Session);
         }
 
         return new RevertResult

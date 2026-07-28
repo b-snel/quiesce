@@ -15,6 +15,13 @@ namespace Quiesce.App.Views;
 /// had passed, which is exactly the moment a "do not start at sign-in" preference needs to still be in
 /// force. So these behave differently from everything else in the app — they survive a reboot on purpose.
 /// <para>
+/// That was the intent from the start and was NOT true until the scope filter landed in
+/// <c>TransactionEngine.RevertSession</c>. Recovery handed the whole session to the revert, so a reboot
+/// undid this along with everything else whenever the session also held a Session-scoped step — which is
+/// the normal case, since <c>apps.close-browsers</c> is in the built-in default profile and a close is
+/// Session-scoped. The scope this page picks only started meaning something then.
+/// </para>
+/// <para>
 /// Two steps, as with the running-apps list. This page authors the entry; the entry ships switched OFF, and
 /// Features plus the preflight are still the gate. Nothing here writes to the machine's startup
 /// configuration — it writes a catalog entry that Engage will later apply through the journal.
@@ -118,9 +125,16 @@ public partial class StartupPage
 
             var message = result.Outcome switch
             {
+                // "stays in force across reboots" used to end this sentence, and it was false. Recovery
+                // handed the whole session to the revert, with no scope filter, so a reboot put this back
+                // along with everything else - and the mixed session is the normal case, because
+                // apps.close-browsers is in the default profile and a close is Session-scoped. Recovery
+                // now filters, so the claim is true; it is stated as what it actually is rather than as
+                // permanence, because Restore still undoes it and that is the part users get wrong.
                 UserEntryOutcome.Added =>
                     $"Added '{result.EntryId}'. It is switched OFF — turn it on in Features, then Engage, and " +
-                    $"{row.Title} will stop starting at sign-in. This one stays in force across reboots.",
+                    $"{row.Title} will stop starting at sign-in. It holds while you are engaged, including " +
+                    "across a restart, and Restore puts it back.",
                 UserEntryOutcome.Extended =>
                     $"'{result.EntryId}' already covered {row.Title} and was refreshed against its current state.",
                 _ => $"'{result.EntryId}' already covers {row.Title}. Nothing changed.",

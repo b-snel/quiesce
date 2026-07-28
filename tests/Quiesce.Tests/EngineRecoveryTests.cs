@@ -103,6 +103,116 @@ public class EngineRecoveryTests : IDisposable
     }
 
     [Fact]
+    public void Recovery_after_a_reboot_reverts_the_session_half_and_leaves_the_standing_preference()
+    {
+        // THE MIXED SESSION, which had never been tested and is the NORMAL case. Recover's own comment
+        // says session-scoped steps are auto-reverted once the boot has passed while persistent-scoped
+        // standing preferences are "never auto-reverted by recovery" - but it implemented that by handing
+        // the whole session to RevertSession, which had no scope filter. So the distinction held only for
+        // a session that happened to be entirely one scope.
+        //
+        // Every existing test was exactly that: Persistent_tweaks_survive_recovery uses a Persistent-only
+        // session, and EngineTestHarness.DwordEntry defaults to Persistent. Meanwhile the real default
+        // profile ships apps.close-browsers, whose close journals Scope = Session - so any real machine
+        // with one sign-in preference is mixed, and a reboot silently put the preference back while
+        // StartupPage said "This one stays in force across reboots."
+        var session = EngineTestHarness.DwordEntry(
+            id: "test.session", valueName: "SessionValue", scope: TweakScope.Session);
+        var persistent = EngineTestHarness.DwordEntry(
+            id: "test.persistent", valueName: "PersistentValue", scope: TweakScope.Persistent);
+
+        var sessionTarget = EngineTestHarness.TargetOf(session);
+        var persistentTarget = EngineTestHarness.TargetOf(persistent);
+        _h.Registry.Seed(sessionTarget, EngineTestHarness.Dword(1));
+        _h.Registry.Seed(persistentTarget, EngineTestHarness.Dword(1));
+
+        var engage = _h.Engine.Engage(
+            _h.Engine.Plan(EngineTestHarness.CatalogOf(session, persistent), "test"), FaultInjector.None);
+
+        Assert.Equal(0u, _h.Registry.Peek(sessionTarget)!.Data.GetUInt32());
+        Assert.Equal(0u, _h.Registry.Peek(persistentTarget)!.Data.GetUInt32());
+
+        ForgeADifferentBoot(engage.SessionId);
+
+        var recovery = _h.Engine.Recover();
+
+        Assert.NotNull(recovery);
+        Assert.Equal(1, recovery!.Reverted);
+
+        // The session step is back...
+        Assert.Equal(1u, _h.Registry.Peek(sessionTarget)!.Data.GetUInt32());
+
+        // ...and the standing preference is STILL APPLIED. This is the assertion the bug failed.
+        Assert.Equal(0u, _h.Registry.Peek(persistentTarget)!.Data.GetUInt32());
+
+        // And the machine stays dirty, which is the half a naive fix gets wrong: Clean means "nothing
+        // deferred and nothing failed", not "nothing left". Clearing the flag here would leave a
+        // persistent step applied with no session marked dirty - the one state none of the four recovery
+        // nets looks for, because every one of them keys on isDirty.
+        Assert.True(recovery.Clean);
+        Assert.True(_h.State.IsDirty);
+        Assert.Equal(engage.SessionId, _h.State.ActiveSessionId);
+
+        // Said out loud rather than left for the user to notice.
+        Assert.Contains(recovery.Messages, m => m.Contains("left applied on purpose", StringComparison.Ordinal));
+
+        // No revertComplete record: the session genuinely is not complete, and baseline-diff.ps1 keys
+        // "is a session outstanding" on applied > 0 && revertComplete == 0.
+        Assert.DoesNotContain(_h.Journal(engage.SessionId), r => r is RevertCompleteRecord);
+
+        // And an explicit Restore afterwards still finishes the job and clears the flag.
+        var restore = _h.Engine.RevertSession(engage.SessionId, "restore");
+
+        Assert.True(restore.Clean);
+        Assert.Equal(1u, _h.Registry.Peek(persistentTarget)!.Data.GetUInt32());
+        Assert.False(_h.State.IsDirty);
+    }
+
+    [Fact]
+    public void An_unfiltered_revert_still_writes_revertComplete_and_clears_the_flag()
+    {
+        // The control for the test above: the ordinary path must be untouched by the filter's existence.
+        var entry = EngineTestHarness.DwordEntry(scope: TweakScope.Session);
+        var target = EngineTestHarness.TargetOf(entry);
+        _h.Registry.Seed(target, EngineTestHarness.Dword(1));
+
+        var engage = _h.Engine.Engage(
+            _h.Engine.Plan(EngineTestHarness.CatalogOf(entry), "test"), FaultInjector.None);
+
+        var restore = _h.Engine.RevertSession(engage.SessionId, "restore");
+
+        Assert.True(restore.Clean);
+        Assert.False(_h.State.IsDirty);
+        Assert.Contains(_h.Journal(engage.SessionId), r => r is RevertCompleteRecord);
+        Assert.DoesNotContain(restore.Messages, m => m.Contains("left applied on purpose", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Rewrites the session's <c>sessionStart</c> boot id so recovery believes a reboot happened.
+    /// </summary>
+    /// <remarks>
+    /// Editing the journal rather than faking a clock, because <c>QuiescePaths.IsSameBoot</c> is what
+    /// recovery actually consults and this keeps the test on the real code path. Same approach as
+    /// <c>PowerSchemeTests</c>, which needed it first.
+    /// </remarks>
+    private void ForgeADifferentBoot(Guid sessionId)
+    {
+        var path = Path.Combine(_h.Paths.SessionDir(sessionId), "journal.jsonl");
+        var lines = File.ReadAllLines(path);
+
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (lines[i].Contains("\"sessionStart\"", StringComparison.Ordinal))
+            {
+                lines[i] = System.Text.RegularExpressions.Regex.Replace(
+                    lines[i], "\"bootId\":\"[^\"]*\"", "\"bootId\":\"forged-earlier-boot\"");
+            }
+        }
+
+        File.WriteAllLines(path, lines);
+    }
+
+    [Fact]
     public void Multi_op_entry_failing_verification_rolls_back_the_whole_entry()
     {
         // Entry-level atomicity: op 2 of 2 fails verification -> op 1 must be unwound too, not
