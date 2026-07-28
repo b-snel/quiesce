@@ -20,11 +20,20 @@
 
 .PARAMETER Quiesce
     Path to quiesce.exe. Defaults to the Release build output.
+
+.PARAMETER Only
+    Entry-id prefixes to restrict the run to, e.g. -Only svc. or -Only svc.print-spooler.
+    Lets the first service run be staged one service at a time instead of stopping nine at once.
+
+.PARAMETER Skip
+    Entry-id prefixes to exclude, e.g. -Skip svc. to cover the registry rows on their own.
 #>
 [CmdletBinding()]
 param(
     [int] $Rounds = 5,
-    [string] $Quiesce
+    [string] $Quiesce,
+    [string[]] $Only = @(),
+    [string[]] $Skip = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,26 +49,43 @@ if (-not $Quiesce) {
 
 # ---------------------------------------------------------------- snapshotting
 
-function Get-CatalogSubtrees {
-    param([string] $CatalogPath)
+<#
+Three facts per service, captured the same way the engine captures them and for the same reason:
+start type, delayed-auto flag and run state move independently. `Start` and `DelayedAutostart` are
+read straight off the registry so an absent DelayedAutostart stays distinguishable from a zero -
+issuing ChangeServiceConfig2 unconditionally MATERIALIZES that value, and a snapshot that folded
+absent into 0 would call that silent mutation a clean restore.
 
-    $catalog = Get-Content $CatalogPath -Raw | ConvertFrom-Json
-    $subtrees = [System.Collections.Generic.HashSet[string]]::new()
+Run state is the one fact with no registry home, so it is read from the SCM.
+#>
+function Get-ServiceFacts {
+    param([string[]] $Names)
 
-    foreach ($entry in $catalog.entries) {
-        foreach ($op in $entry.ops) {
-            $prefix = if ($op.hive -eq 'HKLM') { 'HKLM:' } else { 'HKCU:' }
-            [void]$subtrees.Add("$prefix\$($op.subkey)")
-        }
+    $facts = [ordered]@{}
+    foreach ($name in ($Names | Sort-Object)) {
+        $path = "HKLM:\SYSTEM\CurrentControlSet\Services\$name"
+        if (-not (Test-Path $path)) { $facts[$name] = '<SERVICE ABSENT>'; continue }
+
+        $key     = Get-Item $path
+        $start   = $key.GetValue('Start', '<absent>')
+        $delayed = $key.GetValue('DelayedAutostart', '<absent>')
+        $state   = try { (Get-Service -Name $name -ErrorAction Stop).Status } catch { '<unqueryable>' }
+
+        $facts[$name] = "start=$start delayed=$delayed state=$state"
     }
 
-    return $subtrees
+    return $facts
 }
 
 function Get-Snapshot {
-    param([string[]] $Subtrees)
+    param([string[]] $Subtrees, [string[]] $Services = @())
 
     $lines = [System.Collections.Generic.List[string]]::new()
+
+    # Run state is not in any watched subtree, so it rides along here to be covered by the same
+    # drift comparison as everything else.
+    $facts = Get-ServiceFacts -Names $Services
+    foreach ($name in $facts.Keys) { $lines.Add("SERVICE $name :: $($facts[$name])") }
 
     foreach ($path in ($Subtrees | Sort-Object)) {
         if (-not (Test-Path $path)) {
@@ -78,9 +104,21 @@ function Get-Snapshot {
                 continue
             }
 
-            foreach ($name in ($item.GetValueNames() | Sort-Object)) {
-                $kind = $item.GetValueKind($name)
-                $raw = $item.GetValue($name, $null, 'DoNotExpandEnvironmentNames')
+            try { $names = @($item.GetValueNames() | Sort-Object) } catch { continue }
+
+            foreach ($name in $names) {
+                # A key or value can disappear between the enumeration and the read - volatile keys
+                # and per-boot state do this constantly. Record it as unreadable rather than
+                # throwing: an unreadable value that becomes readable later is drift worth seeing,
+                # but it must not abort a five-round run on its way past.
+                try {
+                    $kind = $item.GetValueKind($name)
+                    $raw = $item.GetValue($name, $null, 'DoNotExpandEnvironmentNames')
+                } catch {
+                    $lines.Add("$normalized :: $name :: <UNREADABLE: $($_.Exception.Message)>")
+                    continue
+                }
+
                 $rendered = if ($raw -is [byte[]]) { [BitConverter]::ToString($raw) }
                             elseif ($raw -is [string[]]) { $raw -join '|' }
                             else { "$raw" }
@@ -142,6 +180,13 @@ $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIde
 $testable = if ($elevated) { $catalog.entries } else { $catalog.entries | Where-Object { -not $_.requiresAdmin } }
 $skipped  = if ($elevated) { @() } else { $catalog.entries | Where-Object { $_.requiresAdmin } }
 
+# -Only / -Skip narrow the run for staging. Applied after the elevation filter so the SKIPPED
+# report still means "needs elevation" and never silently absorbs a deliberate exclusion.
+$matchesPrefix = { param($id, $prefixes) foreach ($p in $prefixes) { if ($id.StartsWith($p, 'OrdinalIgnoreCase')) { return $true } } return $false }
+if ($Only.Count -gt 0) { $testable = @($testable | Where-Object { & $matchesPrefix $_.id $Only }) }
+if ($Skip.Count -gt 0) { $testable = @($testable | Where-Object { -not (& $matchesPrefix $_.id $Skip) }) }
+if (@($testable).Count -eq 0) { throw "No entries selected. -Only $($Only -join ',') / -Skip $($Skip -join ',') matched nothing." }
+
 # Drive the run through a scratch data root so the real machine state is untouched, and enable
 # exactly the entries under test.
 $scratchRoot = Join-Path $env:TEMP "quiesce-baseline-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
@@ -168,20 +213,47 @@ Write-Host "rounds   : $Rounds"
 Write-Host ""
 
 # Watch only the subtrees the tested entries touch.
+#
+# Ops are polymorphic on `kind`, and a service op carries no hive or subkey. Reading them as
+# registry ops yielded the path "HKCU:\" - the entire user hive - which recursed a few hundred
+# thousand volatile values and died on the first one that vanished mid-enumeration. Dispatch on
+# kind, and treat an op that names neither a subkey nor a service as a catalog error rather than
+# quietly watching nothing.
 $subtrees = [System.Collections.Generic.HashSet[string]]::new()
+$serviceNames = [System.Collections.Generic.HashSet[string]]::new()
 foreach ($entry in $testable) {
     foreach ($op in $entry.ops) {
-        $prefix = if ($op.hive -eq 'HKLM') { 'HKLM:' } else { 'HKCU:' }
-        [void]$subtrees.Add("$prefix\$($op.subkey)")
+        switch ($op.kind) {
+            'registry' {
+                if (-not $op.subkey) { throw "$($entry.id): registry op has no subkey" }
+                $prefix = if ($op.hive -eq 'HKLM') { 'HKLM:' } else { 'HKCU:' }
+                [void]$subtrees.Add("$prefix\$($op.subkey)")
+            }
+            'service' {
+                if (-not $op.service) { throw "$($entry.id): service op has no service name" }
+                [void]$serviceNames.Add($op.service)
+                # The service's own key holds Start and DelayedAutostart, so the byte-level diff
+                # covers service configuration for free - including the DelayedAutostart
+                # materialization that a three-fact comparison alone would miss.
+                [void]$subtrees.Add("HKLM:\SYSTEM\CurrentControlSet\Services\$($op.service)")
+            }
+            default { throw "$($entry.id): unknown op kind '$($op.kind)'" }
+        }
     }
 }
 Write-Host "Watching $($subtrees.Count) registry subtree(s), recursively:"
 $subtrees | Sort-Object | ForEach-Object { Write-Host "  $_" }
+if ($serviceNames.Count -gt 0) {
+    Write-Host "Watching $($serviceNames.Count) service(s) for start type, delayed-auto and run state:"
+    $serviceNames | Sort-Object | ForEach-Object { Write-Host "  $_" }
+}
 Write-Host ""
 
-$baseline = Get-Snapshot -Subtrees $subtrees
+$baseline = Get-Snapshot -Subtrees $subtrees -Services $serviceNames
 $baselineMouse = Get-MouseCurve
+$baselineSvc = Get-ServiceFacts -Names $serviceNames
 Write-Host "Baseline: $($baseline.Count) values, mouse curve [$baselineMouse]"
+foreach ($name in $baselineSvc.Keys) { Write-Host "  $name :: $($baselineSvc[$name])" }
 Write-Host ""
 
 $failures = 0
@@ -197,12 +269,31 @@ for ($round = 1; $round -le $Rounds; $round++) {
         break
     }
 
-    $engaged = Get-Snapshot -Subtrees $subtrees
+    $engaged = Get-Snapshot -Subtrees $subtrees -Services $serviceNames
     $changed = (Compare-Object $baseline $engaged).Count
     Write-Host "  engaged: $changed value(s) differ from baseline, mouse curve [$(Get-MouseCurve)]"
 
     if ($changed -eq 0) {
         Write-Host "  WARNING: engage changed nothing - the catalog may already be applied" -ForegroundColor Yellow
+    }
+
+    # A refused service is reported by quiesce and then vanishes into an aggregate count: 24
+    # registry entries applying is more than enough to keep `$changed` healthy while all nine
+    # service steps quietly did nothing. A restore-clean run over a no-op is not evidence of
+    # anything, so name every service that did not move and echo the refusal that explains it.
+    $engagedSvc = Get-ServiceFacts -Names $serviceNames
+    $inert = @($engagedSvc.Keys | Where-Object { $engagedSvc[$_] -eq $baselineSvc[$_] })
+    foreach ($name in $engagedSvc.Keys) {
+        if ($engagedSvc[$name] -ne $baselineSvc[$name]) {
+            Write-Host "    $name : $($baselineSvc[$name])  ->  $($engagedSvc[$name])" -ForegroundColor Cyan
+        }
+    }
+    if ($inert.Count -gt 0) {
+        Write-Host "  NOT APPLIED - $($inert.Count) service(s) unchanged by engage:" -ForegroundColor Yellow
+        foreach ($name in $inert) { Write-Host "    $name :: $($baselineSvc[$name])" -ForegroundColor Yellow }
+        $engageOut | Where-Object { $_ -match 'refus|skip|guard|unavailable|StopRefused' } |
+            ForEach-Object { Write-Host "    | $_" -ForegroundColor Yellow }
+        $failures++
     }
 
     $restoreOut = Invoke-Quiesce 'restore'
@@ -213,7 +304,7 @@ for ($round = 1; $round -le $Rounds; $round++) {
         break
     }
 
-    $restored = Get-Snapshot -Subtrees $subtrees
+    $restored = Get-Snapshot -Subtrees $subtrees -Services $serviceNames
     $drift = Compare-Object $baseline $restored
     $mouseNow = Get-MouseCurve
 
@@ -241,5 +332,5 @@ if ($failures -eq 0) {
     exit 0
 }
 
-Write-Host "FAIL - $failures round(s) showed drift." -ForegroundColor Red
+Write-Host "FAIL - $failures round(s) showed drift or a step that never applied." -ForegroundColor Red
 exit 1
