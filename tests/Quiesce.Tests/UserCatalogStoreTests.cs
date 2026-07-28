@@ -41,14 +41,16 @@ public sealed class UserCatalogStoreTests : IDisposable
     [Fact]
     public void AnAddedCloseEntryPassesTheCatalogValidator()
     {
-        var id = Store.Add(Candidate("comet", @"C:\Users\x\AppData\Local\Perplexity\Comet\Application"),
+        var added = Store.Add(Candidate("comet", @"C:\Users\x\AppData\Local\Perplexity\Comet\Application"),
             ProcessAction.Close, throttleTo: null, shipped: null);
+
+        Assert.Equal(UserEntryOutcome.Added, added.Outcome);
 
         var loaded = Store.Load();
         Assert.NotNull(loaded);
 
         var entry = Assert.Single(loaded.Entries);
-        Assert.Equal(id, entry.Id);
+        Assert.Equal(added.EntryId, entry.Id);
         Assert.Equal("apps.user.close-comet", entry.Id);
 
         var op = Assert.IsType<ProcessOpSpec>(Assert.Single(entry.Ops));
@@ -161,8 +163,91 @@ public sealed class UserCatalogStoreTests : IDisposable
         var first = Store.Add(Candidate("thing", @"C:\Program Files\A"), ProcessAction.Close, null, null);
         var second = Store.Add(Candidate("thing", @"C:\Program Files\B"), ProcessAction.Close, null, null);
 
-        Assert.NotEqual(first, second);
+        Assert.NotEqual(first.EntryId, second.EntryId);
         Assert.Equal(2, Store.Load()!.Entries.Count);
+    }
+
+    /// <summary>
+    /// FOUND BY USING IT. Pressing Throttle four times produced four entries — the base id plus -2, -3 and
+    /// -4 — all throttling the same directory, appearing in Features as four identical rows.
+    /// </summary>
+    /// <remarks>
+    /// The id suffix exists for two <em>different</em> applications that happen to share a display name.
+    /// Reaching for it when the same application is added twice is what turned a duplicate into four.
+    /// Identity is (directory, action).
+    /// </remarks>
+    [Fact]
+    public void AddingTheSameAppTwiceDoesNotCreateASecondEntry()
+    {
+        var candidate = Candidate("thing", @"C:\Program Files\Thing");
+
+        var first = Store.Add(candidate, ProcessAction.Throttle, ThrottleLevel.BelowNormal, null);
+        var again = Store.Add(candidate, ProcessAction.Throttle, ThrottleLevel.BelowNormal, null);
+        var third = Store.Add(candidate, ProcessAction.Throttle, ThrottleLevel.BelowNormal, null);
+
+        Assert.Equal(UserEntryOutcome.Added, first.Outcome);
+        Assert.Equal(UserEntryOutcome.AlreadyPresent, again.Outcome);
+        Assert.Equal(UserEntryOutcome.AlreadyPresent, third.Outcome);
+        Assert.Equal(first.EntryId, again.EntryId);
+
+        Assert.Single(Store.Load()!.Entries);
+    }
+
+    /// <summary>
+    /// Close and throttle for the same application are genuinely different entries — the catalog loader
+    /// refuses to have both in one entry, since a close cannot participate in a rollback.
+    /// </summary>
+    [Fact]
+    public void CloseAndThrottleForOneAppAreSeparateEntries()
+    {
+        var candidate = Candidate("thing", @"C:\Program Files\Thing");
+
+        var close = Store.Add(candidate, ProcessAction.Close, null, null);
+        var throttle = Store.Add(candidate, ProcessAction.Throttle, ThrottleLevel.BelowNormal, null);
+
+        Assert.Equal(UserEntryOutcome.Added, close.Outcome);
+        Assert.Equal(UserEntryOutcome.Added, throttle.Outcome);
+        Assert.Equal(2, Store.Load()!.Entries.Count);
+    }
+
+    /// <summary>
+    /// The set of executables running out of one install tree changes between scans as helpers come and go,
+    /// so an entry added while three were running has to be able to grow to cover the other three. That is
+    /// why image names are not part of the entry's identity.
+    /// </summary>
+    [Fact]
+    public void AddingAgainWithNewExecutablesExtendsTheEntry()
+    {
+        const string dir = @"C:\Program Files\Thing";
+
+        var partial = Store.Add(
+            Candidate("thing", dir, "thing"), ProcessAction.Throttle, ThrottleLevel.BelowNormal, null);
+
+        var full = Store.Add(
+            Candidate("thing", dir, "thing", "thing-helper", "thing-gpu"),
+            ProcessAction.Throttle,
+            ThrottleLevel.BelowNormal,
+            null);
+
+        Assert.Equal(UserEntryOutcome.Extended, full.Outcome);
+        Assert.Equal(partial.EntryId, full.EntryId);
+        Assert.Equal(["thing-helper", "thing-gpu"], full.AddedImageNames);
+
+        var entry = Assert.Single(Store.Load()!.Entries);
+        Assert.Equal(
+            ["thing", "thing-helper", "thing-gpu"],
+            entry.Ops.Cast<ProcessOpSpec>().Select(o => o.ImageName));
+    }
+
+    [Fact]
+    public void RemoveTakesEveryIdGivenToIt()
+    {
+        var a = Store.Add(Candidate("a", @"C:\Program Files\A"), ProcessAction.Close, null, null);
+        var b = Store.Add(Candidate("b", @"C:\Program Files\B"), ProcessAction.Close, null, null);
+        Store.Add(Candidate("c", @"C:\Program Files\C"), ProcessAction.Close, null, null);
+
+        Assert.Equal(2, Store.Remove(a.EntryId, b.EntryId));
+        Assert.Equal("apps.user.close-c", Assert.Single(Store.Load()!.Entries).Id);
     }
 
     [Fact]
@@ -171,9 +256,9 @@ public sealed class UserCatalogStoreTests : IDisposable
         var shipped = EngineTestHarness.CatalogOf(UserCatalogStore.EntryFor(
             Candidate("thing"), ProcessAction.Close, null));
 
-        var id = Store.Add(Candidate("thing"), ProcessAction.Close, null, shipped);
+        var added = Store.Add(Candidate("thing"), ProcessAction.Close, null, shipped);
 
-        Assert.NotEqual(shipped.Entries[0].Id, id);
+        Assert.NotEqual(shipped.Entries[0].Id, added.EntryId);
     }
 
     /// <summary>
@@ -218,8 +303,8 @@ public sealed class UserCatalogStoreTests : IDisposable
         var first = Store.Add(Candidate("a", @"C:\Program Files\A"), ProcessAction.Close, null, null);
         Store.Add(Candidate("b", @"C:\Program Files\B"), ProcessAction.Close, null, null);
 
-        Assert.True(Store.Remove(first));
-        Assert.False(Store.Remove(first));
+        Assert.Equal(1, Store.Remove(first.EntryId));
+        Assert.Equal(0, Store.Remove(first.EntryId));
 
         var remaining = Assert.Single(Store.Load()!.Entries);
         Assert.Equal("apps.user.close-b", remaining.Id);

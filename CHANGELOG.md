@@ -196,6 +196,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- **M6** — **Adding a running app created a new entry every time it was pressed.** Throttling
+  ApplePhotoStreams four times produced four entries — the base id plus `-2`, `-3`, `-4` — all doing the
+  same thing to the same folder, showing up in Features as four identical rows. Two causes, both fixed. The
+  page survives the shell's page rebuild on purpose (tearing down a control still inside its own click
+  handler would crash) but nothing else refreshed its state, so it kept comparing the machine against the
+  catalog as it was *before* the add, kept showing the app as uncovered, and kept offering the button.
+  Separately, adding is now an upsert keyed on (directory, action) rather than an append: the id suffix
+  exists for two *different* applications sharing a display name, and reaching for it when the same
+  application is added twice is what turned a duplicate into four. A rescan that finds executables the
+  stored entry does not cover now extends it — which is also the only way an entry added while three
+  helpers were running comes to cover the other three. Remove takes every entry the user added for that
+  application rather than one of them.
 - **M6** — **The first live run of the running-apps list offered `C:\Windows\System32` as an application.**
   Grouping by install directory assumes a directory belongs to one program, which is true of an install tree
   and false of System32 — where eleven unrelated processes were collected into one candidate named

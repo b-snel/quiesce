@@ -18,7 +18,7 @@ namespace Quiesce.App.Views;
 /// </remarks>
 public partial class RunningAppsPage
 {
-    private readonly AppState _state;
+    private AppState _state;
 
     public RunningAppsPage(AppState state)
     {
@@ -30,10 +30,22 @@ public partial class RunningAppsPage
     /// <summary>Raised after the user catalog changes, so the shell can rebuild plans and other pages.</summary>
     public event EventHandler? CatalogChanged;
 
-    private void OnRescan(object sender, RoutedEventArgs e) => Rescan();
+    private void OnRescan(object sender, RoutedEventArgs e) => Rescan(reloadState: true);
 
-    private void Rescan()
+    /// <param name="reloadState">
+    /// Re-read the catalog before scanning. Required after a write, and the omission of it was a real bug:
+    /// this page survives the shell's page rebuild on purpose — tearing down the control still inside its
+    /// own click handler would crash — but that also means nothing else refreshes its state. So it went on
+    /// comparing the machine against the catalog as it was BEFORE the add, kept showing the app as not
+    /// covered, and kept offering the button that adds it. Four presses, four entries.
+    /// </param>
+    private void Rescan(bool reloadState = false)
     {
+        if (reloadState)
+        {
+            _state = AppState.Load();
+        }
+
         AppDiscoveryResult found;
         try
         {
@@ -108,15 +120,31 @@ public partial class RunningAppsPage
 
         try
         {
-            var id = new UserCatalogStore(_state.DataRoot)
+            var result = new UserCatalogStore(_state.DataRoot)
                 .Add(row.Candidate, action, throttleTo, _state.Catalog);
 
-            ShowNote(
-                $"Added '{id}'. It is switched OFF — go to Features and turn it on for Engage to " +
-                (action == ProcessAction.Close
-                    ? $"close {row.Candidate.DisplayName}. Restore will not reopen it."
-                    : $"lower {row.Candidate.DisplayName}'s priority. Restore puts it back exactly."));
+            var what = action == ProcessAction.Close
+                ? $"close {row.Candidate.DisplayName}. Restore will not reopen it."
+                : $"lower {row.Candidate.DisplayName}'s priority. Restore puts it back exactly.";
 
+            var message = result.Outcome switch
+            {
+                UserEntryOutcome.Added =>
+                    $"Added '{result.EntryId}'. It is switched OFF — go to Features and turn it on for Engage to {what}",
+
+                // Said rather than silently absorbed: the entry the user is looking at now covers more than
+                // it did, and which executables changed is the whole content of that.
+                UserEntryOutcome.Extended =>
+                    $"'{result.EntryId}' already covered this folder, so it was extended rather than " +
+                    $"duplicated. Now also covers: {string.Join(", ", result.AddedImageNames.Select(n => n + ".exe"))}.",
+
+                _ => $"'{result.EntryId}' already covers {row.Candidate.DisplayName} completely. Nothing changed.",
+            };
+
+            // Rescan first so the row stops offering the button, THEN report — the rescan writes the note
+            // itself, so showing the outcome before it would be overwritten by a summary line.
+            Rescan(reloadState: true);
+            ShowNote(message);
             CatalogChanged?.Invoke(this, EventArgs.Empty);
         }
         catch (Exception ex) when (ex is CatalogException or IOException or UnauthorizedAccessException
@@ -130,17 +158,26 @@ public partial class RunningAppsPage
 
     private void OnRemove(object sender, RoutedEventArgs e)
     {
-        if (sender is not FrameworkElement { Tag: AppRow row } || row.RemovableEntryId is not { } id)
+        if (sender is not FrameworkElement { Tag: AppRow row } || row.RemovableEntryIds.Count == 0)
         {
             return;
         }
 
         try
         {
-            ShowNote(new UserCatalogStore(_state.DataRoot).Remove(id)
-                ? $"Removed '{id}'. Quiesce no longer looks for {row.Candidate.DisplayName}."
-                : $"'{id}' was not in your added apps.");
+            // Every entry the user added for this application, not the first one found. The row IS the
+            // application, and a Remove that took one of four duplicates away would need pressing four
+            // times with no indication that it should be.
+            var ids = row.RemovableEntryIds;
+            var removed = new UserCatalogStore(_state.DataRoot).Remove([.. ids]);
 
+            var message = removed == 0
+                ? $"Nothing to remove: {string.Join(", ", ids)} are not in your added apps."
+                : $"Removed {removed} entr{(removed == 1 ? "y" : "ies")} you had added for " +
+                  $"{row.Candidate.DisplayName}: {string.Join(", ", ids)}. Quiesce no longer looks for it.";
+
+            Rescan(reloadState: true);
+            ShowNote(message);
             CatalogChanged?.Invoke(this, EventArgs.Empty);
         }
         catch (Exception ex) when (ex is CatalogException or IOException or UnauthorizedAccessException
@@ -180,8 +217,8 @@ public sealed record AppRow
 
     public required Visibility RemoveVisibility { get; init; }
 
-    /// <summary>Set only when the covering entry is one the user added, so removal is theirs to do.</summary>
-    public required string? RemovableEntryId { get; init; }
+    /// <summary>The covering entries the user added themselves, so removal is theirs to do.</summary>
+    public required IReadOnlyList<string> RemovableEntryIds { get; init; }
 
     public static AppRow From(AppCandidate candidate, IReadOnlySet<string> userEntryIds)
     {
@@ -191,7 +228,7 @@ public sealed record AppRow
         // Only entries the user added are removable from here. A shipped entry is part of the catalog's
         // reviewed content and removing it through a discovery list would be an undocumented way to edit
         // the catalog.
-        var removable = candidate.CoveredBy.FirstOrDefault(userEntryIds.Contains);
+        var removable = candidate.CoveredBy.Where(userEntryIds.Contains).ToList();
 
         var names = candidate.ImageNames.Count == 1
             ? candidate.ImageNames[0] + ".exe"
@@ -216,8 +253,8 @@ public sealed record AppRow
                 : "Nothing here owns a window, so there is nothing to send a close request to.",
             CoveredVisibility = candidate.IsCovered ? Visibility.Visible : Visibility.Collapsed,
             AddVisibility = candidate.IsCovered ? Visibility.Collapsed : Visibility.Visible,
-            RemoveVisibility = removable is null ? Visibility.Collapsed : Visibility.Visible,
-            RemovableEntryId = removable,
+            RemoveVisibility = removable.Count == 0 ? Visibility.Collapsed : Visibility.Visible,
+            RemovableEntryIds = removable,
         };
     }
 }

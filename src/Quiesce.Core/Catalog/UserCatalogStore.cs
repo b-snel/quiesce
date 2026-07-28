@@ -22,6 +22,30 @@ namespace Quiesce.Core.Catalog;
 /// wrote is data like any other.
 /// </para>
 /// </remarks>
+/// <summary>What <see cref="UserCatalogStore.Add"/> did.</summary>
+public enum UserEntryOutcome
+{
+    /// <summary>A new entry was written.</summary>
+    Added,
+
+    /// <summary>An entry already covered this directory and action; executables were added to it.</summary>
+    Extended,
+
+    /// <summary>An entry already covered this directory and action completely. Nothing was written.</summary>
+    AlreadyPresent,
+}
+
+/// <summary>The result of adding a discovered application, said precisely enough to report to the user.</summary>
+public sealed record UserEntryResult
+{
+    public required string EntryId { get; init; }
+
+    public required UserEntryOutcome Outcome { get; init; }
+
+    /// <summary>Executables this call brought under the entry. Empty when nothing changed.</summary>
+    public required IReadOnlyList<string> AddedImageNames { get; init; }
+}
+
 public sealed class UserCatalogStore(string dataRoot)
 {
     public const string FileName = "user-apps.json";
@@ -91,12 +115,77 @@ public sealed class UserCatalogStore(string dataRoot)
         }
     }
 
-    /// <summary>Adds an entry for one discovered application and returns its id.</summary>
-    public string Add(AppCandidate candidate, ProcessAction action, ThrottleLevel? throttleTo, CatalogFile? shipped)
+    /// <summary>
+    /// Adds — or extends — the entry for one discovered application.
+    /// </summary>
+    /// <remarks>
+    /// AN UPSERT, NOT AN APPEND, and that distinction was learned the hard way: pressing Throttle four
+    /// times produced <c>apps.user.throttle-applephotostreams</c>, <c>-2</c>, <c>-3</c> and <c>-4</c>, four
+    /// entries doing the same thing to the same directory. The id-disambiguation suffix exists for two
+    /// <em>different</em> applications that happen to share a display name, and using it for the same
+    /// application twice turned a duplicate into four indistinguishable rows in Features.
+    /// <para>
+    /// Identity is (directory, action). The image names are not part of it: the set of executables running
+    /// out of one install tree changes between scans as helpers come and go, so the same application
+    /// legitimately presents a different name list each time. When a rescan finds names the stored entry
+    /// does not cover, the entry is extended rather than duplicated — which is also the only way an entry
+    /// added while three helpers were running ever comes to cover the other three.
+    /// </para>
+    /// </remarks>
+    public UserEntryResult Add(AppCandidate candidate, ProcessAction action, ThrottleLevel? throttleTo, CatalogFile? shipped)
     {
         ArgumentNullException.ThrowIfNull(candidate);
 
         var existing = Load();
+
+        if (FindEquivalent(existing, candidate, action) is { } match)
+        {
+            var covered = match.Ops.OfType<ProcessOpSpec>()
+                .Select(op => ProcessOpSpec.Bare(op.ImageName))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var missing = candidate.ImageNames
+                .Where(name => !covered.Contains(ProcessOpSpec.Bare(name)))
+                .ToList();
+
+            if (missing.Count == 0)
+            {
+                return new UserEntryResult
+                {
+                    EntryId = match.Id,
+                    Outcome = UserEntryOutcome.AlreadyPresent,
+                    AddedImageNames = [],
+                };
+            }
+
+            var extended = match with
+            {
+                Ops =
+                [
+                    .. match.Ops,
+                    .. missing.Select(name => (OpSpec)new ProcessOpSpec
+                    {
+                        Action = action,
+                        ImageName = name,
+                        UnderDirectories = [candidate.DirectoryFragment],
+                        ThrottleTo = action == ProcessAction.Throttle ? throttleTo ?? ThrottleLevel.BelowNormal : null,
+                    }),
+                ],
+            };
+
+            Save(existing! with
+            {
+                Entries = [.. existing.Entries.Select(e => e.Id == match.Id ? extended : e)],
+            });
+
+            return new UserEntryResult
+            {
+                EntryId = match.Id,
+                Outcome = UserEntryOutcome.Extended,
+                AddedImageNames = missing,
+            };
+        }
+
         var taken = (shipped?.Entries.Select(e => e.Id) ?? [])
             .Concat(existing?.Entries.Select(e => e.Id) ?? [])
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -110,26 +199,47 @@ public sealed class UserCatalogStore(string dataRoot)
             Entries = [.. existing?.Entries ?? [], entry],
         });
 
-        return entry.Id;
+        return new UserEntryResult
+        {
+            EntryId = entry.Id,
+            Outcome = UserEntryOutcome.Added,
+            AddedImageNames = candidate.ImageNames,
+        };
     }
 
-    /// <summary>Removes a user entry. Shipped entries are not touchable this way and never should be.</summary>
-    public bool Remove(string entryId)
+    /// <summary>
+    /// The stored entry that already does <paramref name="action"/> to this candidate's directory, if any.
+    /// </summary>
+    private static CatalogEntry? FindEquivalent(CatalogFile? existing, AppCandidate candidate, ProcessAction action) =>
+        existing?.Entries.FirstOrDefault(entry =>
+            entry.Ops.OfType<ProcessOpSpec>().Any(op =>
+                op.Action == action
+                && op.UnderDirectories.Any(d =>
+                    d.Equals(candidate.DirectoryFragment, StringComparison.OrdinalIgnoreCase))));
+
+    /// <summary>Removes user entries by id. Shipped entries are not touchable this way and never should be.</summary>
+    /// <returns>How many were actually removed.</returns>
+    public int Remove(params string[] entryIds)
     {
+        ArgumentNullException.ThrowIfNull(entryIds);
+
         var existing = Load();
-        if (existing is null)
+        if (existing is null || entryIds.Length == 0)
         {
-            return false;
+            return 0;
         }
 
-        var kept = existing.Entries.Where(e => !e.Id.Equals(entryId, StringComparison.OrdinalIgnoreCase)).ToList();
-        if (kept.Count == existing.Entries.Count)
+        var removing = entryIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var kept = existing.Entries.Where(e => !removing.Contains(e.Id)).ToList();
+        var removed = existing.Entries.Count - kept.Count;
+
+        if (removed == 0)
         {
-            return false;
+            return 0;
         }
 
         Save(existing with { Entries = kept });
-        return true;
+        return removed;
     }
 
     /// <summary>
