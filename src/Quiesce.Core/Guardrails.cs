@@ -69,19 +69,45 @@ public static class Guardrails
             // Human input and camera.
             "hidserv", "camsvc",
 
-            // NVIDIA. NvContainerLocalSystem hosts ShadowPlay and the overlay and carries a
-            // RUN PROCESS recovery action, so an unclean stop re-launches it in an unknown state.
-            "NvContainerLocalSystem", "nvagent",
+            // NVIDIA. NvContainerLocalSystem hosts the NVIDIA App's plugins, ShadowPlay and the
+            // overlay. Verified on this machine (sc.exe qfailure): its recovery actions are
+            // RESTART at 6s, RESTART at 8s, then RUN PROCESS at 10s launching
+            // NvContainerRecovery.bat. So an unclean stop does not simply leave it stopped - it
+            // re-launches it, twice, and then runs a recovery script, and Quiesce has no way to
+            // know what state that leaves. NVDisplay.ContainerLocalSystem above carries the
+            // identical three actions.
+            "NvContainerLocalSystem",
+
+            // NOT an NVIDIA service, despite the name and despite having been grouped with them
+            // here. nvagent is the Windows Network Virtualization Service, hosted in
+            // svchost.exe -k NetSvcs, and it belongs on this list with the network group above:
+            // stopping a NetSvcs co-tenant on a box whose only route in is a remote session is
+            // exactly the hazard those names are here for. Recorded separately because a guardrail
+            // filed under the wrong reason is one someone eventually "corrects" by deleting it -
+            // and the correction would be right about NVIDIA and wrong about the machine.
+            "nvagent",
 
             // Anti-cheat. Interfering with a kernel anti-cheat near a protected game is a
             // hardware-ban vector, and an EAC ban propagates to every EAC title on this hardware.
             "EasyAntiCheat", "EasyAntiCheat_EOS", "BEService", "vgc",
 
-            // Third-party VPN. These install WFP filters through BFE; an unclean stop can leave a
+            // Third-party VPN. This installs WFP filters through BFE; an unclean stop can leave a
             // kill-switch block-all filter in place with no service left to remove it - total
             // network loss, and every network guardrail passed because no network service was
-            // touched.
-            "nordvpn-service", "NordUpdaterService",
+            // touched. On this machine it also carries the RDP session.
+            //
+            // NordUpdaterService was here too and has been REMOVED, deliberately. It was lumped in
+            // by name, and the rationale above is not true of it: measured on this machine it is
+            // Type=16 (WIN32_OWN_PROCESS) out of C:\Program Files\NordUpdater\, not a driver and
+            // not a filter; the actual network components are separate services (tapnordvpn, a
+            // Type=1 kernel driver, and nordsec-threatprotection-service). It has no
+            // DependOnService in either direction - checked against the whole
+            // HKLM\SYSTEM\CurrentControlSet\Services graph, not just sc.exe enumdepend, which only
+            // answers one of the two questions - and no failure actions at all, so a clean stop
+            // stays stopped. Widening what Quiesce is willing to touch is a real decision and this
+            // is the note that justifies it: a guardrail kept for a reason that does not apply to
+            // it is not caution, it is an unexplained refusal.
+            "nordvpn-service",
         };
 
     /// <summary>

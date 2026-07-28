@@ -217,6 +217,48 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   asymmetry is deliberate and tested, because Restore must still put it back for a user who had it, and a
   guardrail applied in both directions would strand them.
 
+- **M6** — **Two vendor updater services: `svc.lghub-updater` and `svc.nord-updater`.** Both were measured
+  before being written rather than assumed: `AUTO_START` and Running, `WIN32_OWN_PROCESS`, no
+  `DependOnService` in *either* direction (checked against the whole
+  `HKLM\SYSTEM\CurrentControlSet\Services` graph, not just `sc.exe enumdepend`, which only answers one of the
+  two questions), zero dependents, no start/stop triggers. Both pause to `Manual` rather than `Disabled` on
+  purpose — a blocked updater means missed fixes, and this is a session pause the user ends with Restore, not
+  a decision to stop updating anything. Neither touches the thing you actually care about: Logitech device
+  behaviour lives in G HUB itself and in separate kernel drivers (`logi_joy_*`, `logi_lamparray`), and the
+  Nord tunnel lives in `nordvpn-service`, which stays locked.
+  <br>`svc.lghub-updater` notes one thing worth knowing: `LGHUBUpdaterService` carries a `RESTART` failure
+  action at 5 s with an infinite reset period. Failure actions fire on unclean termination, not on a clean SCM
+  stop, and Quiesce only ever issues a clean stop — but if the process dies on its own it comes straight back,
+  and that is not Quiesce failing to hold it down.
+
+### Changed
+
+- **`NordUpdaterService` removed from the tier-0 never-touch list.** It had been lumped in with
+  `nordvpn-service` by name, under a rationale about WFP kill-switch filters that is true of the VPN service
+  and false of its updater: measured, the updater is `WIN32_OWN_PROCESS` out of a different install directory,
+  holds no driver and no filter, has no dependency in either direction and no failure actions at all. The Nord
+  kernel component is `tapnordvpn`, a separate service. Widening what Quiesce is willing to touch is a real
+  decision, so the reasoning is recorded next to the list and pinned by a test that asserts both halves — the
+  updater is touchable, `nordvpn-service` is not. A guardrail kept for a reason that does not apply to it is
+  not caution, it is an unexplained refusal.
+
+### Fixed
+
+- **A guardrail filed under the wrong reason.** `nvagent` sat under the NVIDIA comment, described as hosting
+  ShadowPlay. It is the Windows **Network Virtualization Service** (`svchost -k NetSvcs`) and has nothing to do
+  with NVIDIA. It belongs on the never-touch list — a NetSvcs co-tenant on a box whose only route in is a
+  remote session — but anyone checking the stated reasoning would have found it false, concluded the entry was
+  a mistake, and removed it: right about NVIDIA, wrong about the machine. Reasoning corrected, protection
+  pinned by name in a test. Also verified while there that the claim made about `NvContainerLocalSystem` is
+  true: `sc.exe qfailure` reports RESTART at 6 s, RESTART at 8 s, then RUN PROCESS at 10 s launching
+  `NvContainerRecovery.bat` — and `NVDisplay.ContainerLocalSystem` carries the identical three actions.
+- **A four-way race between test classes over one static.** Four classes write
+  `SessionGuard.OverrideForTests` and two of them set it to `true` mid-test to assert a remote-session
+  refusal, while the others pin it to `false` in their constructors — with no shared xUnit collection, so
+  whichever wrote last decided the others' assertions. Latent until the power scheme tests became the fourth
+  writer, at which point a test that passed alone failed in the full run. Same fix as
+  `ProcessAncestryCollection`: everything that touches the static now shares one collection.
+
 ### Hardening (from the M4 adversarial guardrail review)
 
 - **Remote-session detection rewritten.** `GetSystemMetrics(SM_REMOTESESSION)` reports only on the

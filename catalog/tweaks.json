@@ -1183,6 +1183,62 @@
                         "notes":  "Session scope: Quiesce restores the original start type, delayed-auto flag and running state on Restore. Start type is only written AFTER the service is confirmed stopped, so a refused stop leaves it exactly as found."
                     },
                     {
+                        "id":  "svc.lghub-updater",
+                        "category":  "services",
+                        "title":  "Pause the Logitech G HUB updater",
+                        "evidence":  "Situational",
+                        "impact":  "Low",
+                        "riskTier":  1,
+                        "scope":  "Session",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "service",
+                                        "service":  "LGHUBUpdaterService",
+                                        "startMode":  "Manual",
+                                        "stopNow":  true
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "G HUB stops checking for updates while paused. YOUR MICE AND KEYBOARDS ARE NOT AFFECTED: this is only the updater. Per-key RGB, DPI profiles, onboard memory and macros are provided by G HUB itself (lghub.exe / lghub_agent.exe) and by separate Logitech kernel drivers (logi_joy_bus_enum, logi_joy_vir_hid, logi_joy_xlcore, logi_lamparray) plus logi_lamparray_service, none of which this entry touches. If G HUB is open it keeps working. Update checks resume on Restore.",
+                        "notes":  "Measured on the development machine: AUTO_START, Running, WIN32_OWN_PROCESS, LocalSystem, binary \"C:\\Program Files\\LGHUB\\lghub_updater.exe\" --run-as-service, no DependOnService in either direction, zero dependents, and no start or stop triggers - so Manual is available rather than clamped, and a clean stop stays stopped. Manual rather than Disabled ON PURPOSE: a blocked updater means missed fixes, and this is a Session-scoped pause the user ends by pressing Restore, not a decision to stop updating Logitech software. NOTE ONE RECOVERY ACTION: sc.exe qfailure reports RESTART after 5000ms with RESET_PERIOD INFINITE. Failure actions fire on unclean termination, not on a clean SCM stop, and Quiesce only ever issues a clean stop - but if the process dies on its own it will come straight back, and that is not Quiesce failing to hold it down. Worth knowing that on this machine G HUB was NOT running when this entry was written: lghub_updater.exe was the only LGHUB process alive, which is exactly the case the entry is for. Session scope: Quiesce restores the original start type, delayed-auto flag and running state on Restore. Start type is only written AFTER the service is confirmed stopped, so a refused stop leaves it exactly as found."
+                    },
+                    {
+                        "id":  "svc.nord-updater",
+                        "category":  "services",
+                        "title":  "Pause the NordVPN updater",
+                        "evidence":  "Situational",
+                        "impact":  "Low",
+                        "riskTier":  2,
+                        "scope":  "Session",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "service",
+                                        "service":  "NordUpdaterService",
+                                        "startMode":  "Manual",
+                                        "stopNow":  true
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "NordVPN stops checking for updates while paused. THE VPN ITSELF IS NOT TOUCHED. This is NordSec Update Service out of C:\\Program Files\\NordUpdater\\, which is a different service and a different install directory from nordvpn-service, the one that actually holds the tunnel - and nordvpn-service is on the never-touch list precisely because stopping it would drop the VPN, which on a machine reached over Remote Desktop would drop the connection too. The tapnordvpn network driver and NordSec Threat Protection are also separate services and are not touched. Update checks resume on Restore. Because this is a SECURITY product, consider whether you want its updater paused at all: the pause lasts until Restore, but a VPN client is not the thing to leave behind on updates.",
+                        "notes":  "THIS ENTRY REQUIRED REMOVING NordUpdaterService FROM THE TIER-0 NEVER-TOUCH LIST, which is a deliberate widening of what Quiesce will touch and is justified by measurement rather than by convenience. It had been lumped in with nordvpn-service by name, under a rationale about WFP kill-switch filters that is true of the VPN service and false of the updater. Measured on the development machine: Type=16 (WIN32_OWN_PROCESS), AUTO_START, Running, LocalSystem, no DependOnService in either direction - verified against the whole HKLM\\SYSTEM\\CurrentControlSet\\Services graph rather than only sc.exe enumdepend, which answers just one of the two questions - zero dependents, no start or stop triggers, and NO FAILURE ACTIONS at all, so a clean stop stays stopped. It holds no driver and no filter: the Nord kernel component on this machine is tapnordvpn (Type=1, demand-start), a separate service. riskTier 2 rather than 1 not because the stop is risky but because the product it belongs to is a security product and the user should read whatItBreaks before enabling it. Manual rather than Disabled for the same reason. Session scope: Quiesce restores the original start type, delayed-auto flag and running state on Restore. Start type is only written AFTER the service is confirmed stopped, so a refused stop leaves it exactly as found."
+                    },
+                    {
                         "id":  "apps.close-browsers",
                         "category":  "apps",
                         "title":  "Close web browsers",

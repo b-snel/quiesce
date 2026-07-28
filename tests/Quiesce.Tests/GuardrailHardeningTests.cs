@@ -37,6 +37,60 @@ public class GuardrailHardeningTests
         Assert.True(Guardrails.IsServiceProtected("vgc"));
     }
 
+    /// <summary>
+    /// The VPN service stays locked and its updater does not, and the two must not drift back together.
+    /// </summary>
+    /// <remarks>
+    /// <c>NordUpdaterService</c> was on the tier-0 list, lumped in with <c>nordvpn-service</c> by name under
+    /// a rationale about WFP kill-switch filters. Measured, that rationale is true of the VPN service and
+    /// false of the updater: it is <c>WIN32_OWN_PROCESS</c> out of a different install directory, holds no
+    /// driver or filter, has no dependency in either direction and no failure actions. Removing it widened
+    /// what Quiesce is willing to touch, so this test pins BOTH halves — the widening and the thing that
+    /// was deliberately not widened. Re-adding the updater silently, or dropping the VPN service, breaks it.
+    /// </remarks>
+    [Fact]
+    public void TheVpnServiceStaysLockedButItsUpdaterIsNot()
+    {
+        Assert.True(Guardrails.IsServiceProtected("nordvpn-service"));
+        Assert.False(Guardrails.IsServiceProtected("NordUpdaterService"));
+
+        // The VPN service also carries the remote session on the target machine; the updater does not
+        // touch the network at all, so it must not be in the remote-fragile set either.
+        Assert.False(Guardrails.IsRemoteFragile("NordUpdaterService"));
+    }
+
+    /// <summary>
+    /// The Logitech updater is touchable; the display container never is.
+    /// </summary>
+    /// <remarks>
+    /// Paired deliberately. Both are vendor services with an Automatic start on the target machine, and the
+    /// difference is not vendor or start type — it is that stopping the display container mid-session is a
+    /// hang or a black screen and it re-launches itself through a recovery script, whereas the Logitech
+    /// updater does nothing for the running machine.
+    /// </remarks>
+    [Fact]
+    public void VendorUpdatersAreTouchableButTheDisplayContainerIsNot()
+    {
+        Assert.False(Guardrails.IsServiceProtected("LGHUBUpdaterService"));
+        Assert.True(Guardrails.IsServiceProtected("NVDisplay.ContainerLocalSystem"));
+    }
+
+    /// <summary>
+    /// <c>nvagent</c> is the Windows Network Virtualization Service, not an NVIDIA one.
+    /// </summary>
+    /// <remarks>
+    /// It belongs on the never-touch list — it is a <c>svchost -k NetSvcs</c> co-tenant, and this machine's
+    /// only route in is a remote session — but it had been filed under the NVIDIA comment, where anyone
+    /// checking the reasoning would find it does not host ShadowPlay, conclude the entry was wrong, and
+    /// remove it. Right about NVIDIA, wrong about the machine. The name is asserted here so the protection
+    /// survives that correction.
+    /// </remarks>
+    [Fact]
+    public void NvagentIsProtectedAsANetworkServiceNotAsAnNvidiaOne()
+    {
+        Assert.True(Guardrails.IsServiceProtected("nvagent"));
+    }
+
     [Fact]
     public void The_remote_locked_list_is_not_a_second_copy()
     {
