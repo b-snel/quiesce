@@ -19,6 +19,79 @@ internal static class Verbs
 
     // ------------------------------------------------------------ read-only
 
+    /// <summary>
+    /// Lists running applications Quiesce may act on, and says which the catalog already covers.
+    /// </summary>
+    /// <remarks>
+    /// Read-only, and the answer to "why didn't Quiesce close my browser": an application the catalog has
+    /// never heard of is not refused, it is invisible. Before this existed, a browser Quiesce did not know
+    /// about looked exactly like a browser that was not running — Comet went through a whole Engage that
+    /// way while the plan printed nine confident "nothing matching X is running" lines.
+    /// </remarks>
+    public static int ListApps(CliEnvironment env)
+    {
+        ArgumentNullException.ThrowIfNull(env);
+
+        // Loaded when there is one, but not required. The list is still worth printing without a catalog;
+        // it just cannot say what is already covered.
+        CatalogFile? catalog = null;
+        try
+        {
+            catalog = env.CatalogPath is null ? null : env.LoadCatalog();
+        }
+        catch (CatalogException ex)
+        {
+            Console.WriteLine($"catalog: unreadable ({ex.Message}) - coverage is not shown below.");
+        }
+
+        var processes = new Win32ProcessControl();
+        var services = new Win32ServiceControl();
+        var discovery = new Quiesce.Core.RunningAppDiscovery(
+            processes,
+            Quiesce.Core.ProcessClassifier.ForMachine(
+                processes,
+                gameDirectories: null,
+                serviceHostPids: services.ServiceHostProcessIds()));
+
+        var result = discovery.Discover(catalog);
+        var candidates = result.Candidates;
+        var uncovered = candidates.Count(c => !c.IsCovered);
+
+        Console.WriteLine(
+            $"{candidates.Count} running application(s) Quiesce may act on: " +
+            $"{uncovered} not in the catalog, {candidates.Count - uncovered} covered.");
+
+        if (result.WindowsComponentsOmitted > 0)
+        {
+            Console.WriteLine(
+                $"  ({result.WindowsComponentsOmitted} group(s) under {Environment.GetFolderPath(Environment.SpecialFolder.Windows)} " +
+                "are not listed: that directory is not an application's install root, and one directory " +
+                "there holds many unrelated Windows processes.)");
+        }
+
+        if (!Elevation.IsElevated())
+        {
+            // Said rather than left as a silently shorter list. An unelevated Quiesce cannot read an
+            // elevated process's image path, and targeting is path-based, so those never appear at all.
+            Console.WriteLine(
+                "  (not elevated: elevated processes deny their image path, so they are not listed. " +
+                "Run elevated for the full picture.)");
+        }
+
+        foreach (var app in candidates)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"  {app.DisplayName}  [{(app.IsCovered ? string.Join(", ", app.CoveredBy) : "NOT IN CATALOG")}]");
+            Console.WriteLine($"    processes: {app.ProcessCount} ({app.WindowedCount} with a window)" +
+                              (app.CanClose ? string.Empty : " - no window, so it cannot be asked to close"));
+            Console.WriteLine($"    images:    {string.Join(", ", app.ImageNames.Select(n => n + ".exe"))}");
+            Console.WriteLine($"    directory: {app.InstallDirectory}");
+            Console.WriteLine($"    would pin: {app.DirectoryFragment}");
+        }
+
+        return CommandRouter.ExitCode.Ok;
+    }
+
     public static int Inventory(CliEnvironment env)
     {
         // Reported as UNKNOWN, never as clean. The data root is Administrators-only by design, so an
@@ -41,6 +114,19 @@ internal static class Verbs
         if (state is not null)
         {
             Console.WriteLine($"machine: {(state.IsDirty ? $"ENGAGED (session {state.ActiveSessionId:D})" : "clean")}");
+
+            // Separate line from `machine:`, because it is a separate fact and orthogonal to it: a clean
+            // machine can still owe a restart, which is exactly the case a single status word would hide.
+            if (state.RebootPending)
+            {
+                Console.WriteLine(
+                    $"reboot:  PENDING - {state.RebootPendingEntryIds.Count} change(s) are written but not " +
+                    "yet in effect; Windows must restart.");
+                foreach (var id in state.RebootPendingEntryIds)
+                {
+                    Console.WriteLine($"         {id}");
+                }
+            }
         }
 
         Console.WriteLine($"data:    {env.Paths.DataRoot}");
@@ -223,6 +309,13 @@ internal static class Verbs
             foreach (var note in result.Notes)
             {
                 Console.WriteLine($"  note: {note}");
+            }
+
+            if (result.RebootPendingEntries.Count > 0)
+            {
+                Console.WriteLine(
+                    $"  REBOOT NEEDED before {result.RebootPendingEntries.Count} of these take effect: " +
+                    string.Join(", ", result.RebootPendingEntries));
             }
 
             foreach (var entry in result.RolledBackEntries)
@@ -447,6 +540,17 @@ internal static class Verbs
     {
         Console.WriteLine($"  reverted {result.Reverted}, deferred {result.Deferred}, failed {result.Failed}" +
                           (result.Clean ? " — machine clean" : " — machine still DIRTY"));
+
+        // Qualifies the "machine clean" above rather than being buried under it. The registry is back;
+        // the running system is not, and a restore that says "clean" without this is overstating its undo.
+        if (result.RebootPendingEntries.Count > 0)
+        {
+            Console.WriteLine(
+                $"  REBOOT NEEDED to finish undoing {result.RebootPendingEntries.Count} entr" +
+                $"{(result.RebootPendingEntries.Count == 1 ? "y" : "ies")}: " +
+                string.Join(", ", result.RebootPendingEntries));
+        }
+
         foreach (var message in result.Messages)
         {
             Console.WriteLine($"  {message}");

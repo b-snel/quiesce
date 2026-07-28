@@ -147,8 +147,20 @@ public sealed class ProfileStore(string dataRoot)
     }
 
     /// <summary>Turns one entry on or off in the active profile and persists it.</summary>
-    public void SetEnabled(string entryId, bool enabled)
+    public void SetEnabled(string entryId, bool enabled) => SetEnabled([entryId], enabled);
+
+    /// <summary>
+    /// Turns a set of entries on or off in one read-modify-write.
+    /// </summary>
+    /// <remarks>
+    /// Bulk rather than a loop over the single-entry form, which would be 36 load/save round trips for a
+    /// "select all" — and 36 chances for a partially-written profile if one of them threw halfway. One
+    /// atomic replace either takes the whole selection or leaves the file as it was.
+    /// </remarks>
+    public void SetEnabled(IEnumerable<string> entryIds, bool enabled)
     {
+        ArgumentNullException.ThrowIfNull(entryIds);
+
         var file = Load();
         var active = file.Active;
 
@@ -156,17 +168,42 @@ public sealed class ProfileStore(string dataRoot)
             ? profile.Enabled.ToHashSet(StringComparer.OrdinalIgnoreCase)
             : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        if (enabled)
+        foreach (var entryId in entryIds)
         {
-            current.Add(entryId);
-        }
-        else
-        {
-            current.Remove(entryId);
+            if (enabled)
+            {
+                current.Add(entryId);
+            }
+            else
+            {
+                current.Remove(entryId);
+            }
         }
 
+        Replace(file, active, current);
+    }
+
+    /// <summary>
+    /// Replaces the active profile's enabled set outright.
+    /// </summary>
+    /// <remarks>
+    /// The set form rather than a union, because that is what the bulk buttons mean: "select all" is a
+    /// claim about the whole set, not an instruction to add to it. It also prunes ids the catalog no longer
+    /// ships — an entry renamed between catalog versions otherwise leaves a dead id in the profile that no
+    /// per-entry toggle can ever reach, since there is no row to switch off.
+    /// </remarks>
+    public void SetEnabledExactly(IEnumerable<string> entryIds)
+    {
+        ArgumentNullException.ThrowIfNull(entryIds);
+
+        var file = Load();
+        Replace(file, file.Active, entryIds.ToHashSet(StringComparer.OrdinalIgnoreCase));
+    }
+
+    private void Replace(ProfileFile file, string active, HashSet<string> enabled)
+    {
         var profiles = file.Profiles.ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
-        profiles[active] = new Profile { Enabled = [.. current.OrderBy(x => x, StringComparer.Ordinal)] };
+        profiles[active] = new Profile { Enabled = [.. enabled.OrderBy(x => x, StringComparer.Ordinal)] };
 
         Save(file with { Profiles = profiles });
     }

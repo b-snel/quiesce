@@ -3,6 +3,7 @@ using Quiesce.Core.Platform;
 
 namespace Quiesce.Tests;
 
+[Collection(ProcessAncestryCollection.Name)]
 public class ProcessCloserTests : IDisposable
 {
     // See ProcessClassifierTests: pinned so a real PID in the test host's ancestry cannot collide with

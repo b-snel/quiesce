@@ -32,6 +32,7 @@ public static class CommandRouter
         new("revert-all",    "M1", "Revert every incomplete session found on disk. The panic button."),
         new("recover",       "M1", "Finish an interrupted apply or revert. Run automatically at boot/logon."),
         new("verify-revert", "M1", "Apply, immediately revert, and assert the machine is byte-identical."),
+        new("list-apps",     "M5", "List running applications Quiesce may act on, and which the catalog covers."),
         new("discover",      "M5", "Find installed games across Steam, Epic, Battle.net, EA, GOG, Xbox."),
         new("update",        "M7", "Check for a new release. --appcast <url> overrides the source (testing only)."),
     ];
@@ -73,6 +74,7 @@ public static class CommandRouter
                 "revert-all" => Quiesce.Cli.Verbs.RevertAll(env),
                 "recover" => Quiesce.Cli.Verbs.Recover(env),
                 "verify-revert" => Quiesce.Cli.Verbs.VerifyRevert(env),
+                "list-apps" => Quiesce.Cli.Verbs.ListApps(env),
                 _ => NotImplemented(verb),
             };
         }

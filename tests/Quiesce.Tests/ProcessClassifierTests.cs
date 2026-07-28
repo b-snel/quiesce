@@ -3,6 +3,7 @@ using Quiesce.Core.Platform;
 
 namespace Quiesce.Tests;
 
+[Collection(ProcessAncestryCollection.Name)]
 public class ProcessClassifierTests : IDisposable
 {
     // The classifier reads live ancestry, and the fake hands out PIDs from 1000 up — which can collide

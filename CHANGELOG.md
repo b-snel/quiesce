@@ -114,6 +114,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   satisfy by construction — including one would have meant closing the operator's browser five times
   over in order to assert nothing about it.
 
+- **M6** — **Restart warning.** `requiresReboot` was data nothing read: three catalog entries take effect
+  only after a restart, and Quiesce reported them applied and said nothing. A change needing a restart now
+  records a marker, and a banner names the waiting entries on every page until the machine actually
+  restarts. It survives closing the app, and it survives Restore — putting a reboot-requiring value back
+  does not put the running system back, so a restore that says "machine clean" is telling the truth about
+  the registry and the wrong thing about the machine. The marker clears only on positive evidence of a
+  restart (uptime going backwards), never on a resume from sleep, because a warning that retracts itself
+  without a reboot is worse than no warning.
+- **M6** — **Select all / Select none / Reset to defaults** on Features, with a summary of what a bulk
+  action just did: how many entries close applications Restore will not reopen, how many change the machine
+  for every user, how many need a restart, how many Windows will refuse on this machine, and how many were
+  already lean. Every count comes from the live plan, not a hand-maintained list of rows to be careful about.
+- **M6** — **Switched-off entries sort to the top** of Features and re-sort live as you toggle, so the
+  exceptions you made are visible instead of scattered through three dozen rows. Off rows also state what
+  the machine's live value is, so "off" and "off, and already lean anyway" are distinguishable.
+- **M6** — **Running apps: discover what the catalog does not cover, and add it.** Lists applications running
+  right now that Quiesce is permitted to act on, grouped by install directory, marking the ones already
+  covered. Adding one writes an ordinary catalog entry pinned to the image name *and* the directory the
+  application was found in — path-based targeting is the safety property, so discovery is a way of
+  *authoring* a precise entry, never a looser way of matching. Added entries start switched OFF, live in the
+  Administrators-only data root, and go through the same validator as the shipped catalog, which means the
+  guardrails refuse a user-written entry exactly as they refuse a shipped one. New `quiesce list-apps` verb
+  prints the same list.
+
 ### Hardening (from the M4 adversarial guardrail review)
 
 - **Remote-session detection rewritten.** `GetSystemMetrics(SM_REMOTESESSION)` reports only on the
@@ -171,6 +195,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   healthy row into an alarming one.
 
 ### Fixed
+
+- **M6** — **The first live run of the running-apps list offered `C:\Windows\System32` as an application.**
+  Grouping by install directory assumes a directory belongs to one program, which is true of an install tree
+  and false of System32 — where eleven unrelated processes were collected into one candidate named
+  `ApplicationFrameHost`. Adding it would have pinned `C:\Windows\System32\` and asked all eleven to close,
+  including `rdpclip.exe`, the clipboard of the Remote Desktop session driving the machine, plus `ctfmon`,
+  `sihost`, `taskhostw` and whatever console was open. Nothing under the Windows directory is offered now,
+  structurally rather than by a list of names to spare; Store-packaged applications under `WindowsApps` are
+  unaffected because each package genuinely has its own directory. The omitted count is reported rather than
+  the list quietly getting shorter.
+- **M6** — **Another copy of Quiesce was offered as something to close.** Self-protection is path-based on
+  purpose, so a second copy on disk is a different image path and slipped through. Excluded by image name.
+- **M6** — **Bulk enable unioned with the built-in default instead of replacing the enabled set.** On a
+  profile that had never been saved, "Select all" produced nine enabled ids in a three-entry catalog, and
+  "Select none" could not remove the six it had inherited because no row existed to switch off. Bulk actions
+  now state the set outright, which also prunes ids a catalog update has renamed away.
+- **M6** — A test class that pinned the process ancestry to its own PID passed alone and failed in the full
+  run, because two other classes pin the same process-wide static to the empty set and xUnit runs classes in
+  parallel. Everything touching it now shares one collection.
 
 - **M5** — **Quiesce reported `machine: clean` about a machine that was engaged.** The data root is
   hardened to Administrators by design — an elevated Quiesce later executes the revert plan it finds

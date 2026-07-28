@@ -6,27 +6,51 @@
     <Grid Margin="24,16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Margin="0,0,0,12">
             <TextBlock FontSize="22" FontWeight="SemiBold" Text="Features" />
             <TextBlock Margin="0,4,0,0" Opacity="0.7" TextWrapping="Wrap"
-                       Text="Every tweak carries its evidence level and what it breaks. Toggles activate in M3 — this page currently shows live machine state, read-only." />
+                       Text="Every tweak carries its evidence level and what it breaks. Nothing is applied until you Engage, and the preflight dialog names every change first." />
+
+            <!-- Off entries sort above on ones, so the exceptions are what you see first. -->
+            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                <ui:Button x:Name="SelectAllButton" x:FieldModifier="public" Content="Select all" Click="OnSelectAll" Padding="16,6" />
+                <ui:Button x:Name="SelectNoneButton" x:FieldModifier="public" Content="Select none" Click="OnSelectNone" Padding="16,6" Margin="8,0,0,0" />
+                <ui:Button x:Name="ResetButton" Content="Reset to defaults" Click="OnResetDefaults" Padding="16,6" Margin="8,0,0,0" />
+                <TextBlock x:Name="CountLabel" VerticalAlignment="Center" Margin="16,0,0,0" Opacity="0.7" FontSize="12.5" />
+            </StackPanel>
         </StackPanel>
 
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-            <ItemsControl x:Name="EntryList">
+        <!-- What a bulk action just did. Shown rather than left to be inferred from 36 moving rows:
+             "select all" quietly switching on the rows that carry caveats is the kind of thing this
+             app should say out loud, even though the preflight is the real gate. -->
+        <Border x:Name="BulkNote" Grid.Row="1" CornerRadius="6" Padding="14,10" Margin="0,0,0,12"
+                Background="#18FFFFFF" Visibility="Collapsed">
+            <TextBlock x:Name="BulkNoteText" TextWrapping="Wrap" FontSize="12.5" />
+        </Border>
+
+        <ScrollViewer x:Name="ListScroller" Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <ItemsControl x:Name="EntryList" x:FieldModifier="public">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate DataType="{x:Type views:FeatureRow}">
                         <ui:Card Margin="0,4" Padding="16,12">
                             <Grid>
                                 <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
 
-                                <StackPanel Grid.Column="0">
+                                <!-- Off rows carry a marker as well as their position, so the ordering is
+                                     legible after the user has scrolled away from the top. -->
+                                <Border Grid.Column="0" Width="3" CornerRadius="2" Margin="0,0,12,0"
+                                        Background="{DynamicResource QuiesceAccentBrush}"
+                                        Visibility="{Binding OffMarkerVisibility}" />
+
+                                <StackPanel Grid.Column="1">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" />
                                         <Border CornerRadius="4" Padding="6,2" Margin="10,0,0,0"
@@ -39,14 +63,17 @@
                                         <Border CornerRadius="4" Padding="6,2" Margin="6,0,0,0" Background="#22FFFFFF">
                                             <TextBlock Text="{Binding TierLabel}" FontSize="11" Opacity="0.9" />
                                         </Border>
+                                        <Border CornerRadius="4" Padding="6,2" Margin="6,0,0,0" Background="#33D29922"
+                                                Visibility="{Binding RebootVisibility}">
+                                            <TextBlock Text="{Binding RebootLabel}" FontSize="11" FontWeight="SemiBold" Opacity="0.95" />
+                                        </Border>
                                     </StackPanel>
                                     <TextBlock Text="{Binding Breaks}" Margin="0,6,0,0" Opacity="0.65" TextWrapping="Wrap" FontSize="12" />
                                     <TextBlock Text="{Binding StatusLabel}" Margin="0,4,0,0" Opacity="0.5" FontSize="12" FontFamily="Consolas" />
                                 </StackPanel>
 
-                                <ui:ToggleSwitch Grid.Column="1"
+                                <ui:ToggleSwitch Grid.Column="2"
                                                  VerticalAlignment="Center"
-                                                 Tag="{Binding EntryId}"
                                                  IsChecked="{Binding IsEnabled, Mode=OneWay}"
                                                  IsEnabled="{Binding CanToggle}"
                                                  Checked="OnToggled"

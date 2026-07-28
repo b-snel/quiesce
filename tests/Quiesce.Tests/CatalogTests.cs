@@ -227,6 +227,42 @@ public class CatalogTests
         Assert.False(op.NeedsAdmin);
     }
 
+    /// <summary>
+    /// A drive-rooted fragment is accepted alongside the drive-relative form the shipped catalog uses.
+    /// </summary>
+    /// <remarks>
+    /// It is the stricter of the two, not a relaxation: anchored at the root, it cannot match the same
+    /// directory name appearing deeper in an unrelated path. The shipped catalog stays drive-relative
+    /// because an install can be on any drive; entries written from the running-apps list are rooted,
+    /// because discovery knows exactly where the application is.
+    /// </remarks>
+    [Fact]
+    public void A_drive_rooted_directory_fragment_is_accepted()
+    {
+        var file = CatalogLoader.Load(
+            new MemoryStream(Encoding.UTF8.GetBytes(
+                $$"""
+                { "schemaVersion": 1, "catalogVersion": "x", "entries": [
+                  {{ProcessEntryJson(directories: @"[""C:\\Program Files\\Thing\\""]")}}
+                ] }
+                """)),
+            "test.json");
+
+        var op = Assert.IsType<ProcessOpSpec>(Assert.Single(file.Entries).Ops[0]);
+        Assert.Equal([@"C:\Program Files\Thing\"], op.UnderDirectories);
+    }
+
+    /// <summary>
+    /// A UNC fragment is refused. Matching is a substring test, and <c>\\server\share\...</c> has no
+    /// anchor that test can rely on — the share prefix makes it look rooted while the part that matters
+    /// begins mid-path.
+    /// </summary>
+    [Fact]
+    public void A_unc_directory_fragment_is_refused() =>
+        Assert.Contains(
+            "backslash",
+            Refused(ProcessEntryJson(directories: @"[""\\\\server\\share\\App\\""]")).Message);
+
     [Fact]
     public void A_catalog_cannot_name_a_never_touch_process()
     {

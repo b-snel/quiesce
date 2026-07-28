@@ -110,7 +110,11 @@ public partial class DashboardPage
             {
                 ShowResult(CleanBrush,
                     $"Engaged. {result.Applied} change{(result.Applied == 1 ? "" : "s")} applied" +
-                    (result.SkippedNoop > 0 ? $", {result.SkippedNoop} already lean" : string.Empty) + ".");
+                    (result.SkippedNoop > 0 ? $", {result.SkippedNoop} already lean" : string.Empty) + "." +
+                    (result.RebootPendingEntries.Count > 0
+                        ? $" {result.RebootPendingEntries.Count} of them need a restart before they do anything — " +
+                          "see the banner at the top."
+                        : string.Empty));
             }
             else
             {
@@ -152,7 +156,12 @@ public partial class DashboardPage
 
             if (result.Clean)
             {
-                ShowResult(CleanBrush, $"Restored. {result.Reverted} change{(result.Reverted == 1 ? "" : "s")} put back.");
+                ShowResult(CleanBrush,
+                    $"Restored. {result.Reverted} change{(result.Reverted == 1 ? "" : "s")} put back." +
+                    (result.RebootPendingEntries.Count > 0
+                        ? " The registry is back as it was, but some of these need a restart before the " +
+                          "machine behaves that way again — see the banner at the top."
+                        : string.Empty));
             }
             else
             {

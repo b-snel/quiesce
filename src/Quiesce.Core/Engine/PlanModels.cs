@@ -18,6 +18,16 @@ public sealed record PlannedStep
     /// <summary>Human identity, used by the preflight list and the journal.</summary>
     public required string Target { get; init; }
 
+    /// <summary>
+    /// This step's change only takes full effect after a restart, from the owning entry.
+    /// </summary>
+    /// <remarks>
+    /// Carried on the step rather than looked up from the catalog because the journal has to record it:
+    /// reverting a reboot-requiring change needs a restart just as much as applying one did, and the
+    /// revert path never reads the catalog.
+    /// </remarks>
+    public bool RequiresReboot { get; init; }
+
     // --- registry ops -------------------------------------------------------
 
     public RegistryTarget? RegistryTarget { get; init; }
@@ -200,6 +210,16 @@ public sealed record EngagePlan
     public IEnumerable<PlannedStep> RefusedSteps => Steps.Where(s => s.RefusedReason is not null);
 
     public bool RequiresElevation => EffectiveSteps.Any(s => s.Op.NeedsAdmin);
+
+    /// <summary>
+    /// Entries in this plan that will not take full effect until the machine restarts.
+    /// </summary>
+    /// <remarks>
+    /// Derived from the steps that will actually run, so an already-lean reboot-requiring entry does not
+    /// make the preflight ask for a restart nothing is waiting on.
+    /// </remarks>
+    public IReadOnlyList<string> RebootRequiringEntries =>
+        [.. EffectiveSteps.Where(s => s.RequiresReboot).Select(s => s.EntryId).Distinct(StringComparer.OrdinalIgnoreCase)];
 }
 
 public sealed record EngageResult
@@ -231,6 +251,9 @@ public sealed record EngageResult
     public IReadOnlyDictionary<string, string> Diagnoses { get; init; } =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Entries that were applied but only take full effect after a restart.</summary>
+    public IReadOnlyList<string> RebootPendingEntries { get; init; } = [];
+
     public bool Success => RolledBackEntries.Count == 0;
 }
 
@@ -243,6 +266,17 @@ public sealed record RevertResult
     public required int Failed { get; init; }
 
     public required IReadOnlyList<string> Messages { get; init; }
+
+    /// <summary>
+    /// Entries whose undo only takes full effect after a restart.
+    /// </summary>
+    /// <remarks>
+    /// Symmetric with apply, and easy to get wrong in the direction that matters: putting a
+    /// reboot-requiring value back does not put the running system back. Restore reports the machine
+    /// clean — which is true of the registry and not yet true of behaviour — so the warning has to
+    /// survive the restore rather than be cleared by it.
+    /// </remarks>
+    public IReadOnlyList<string> RebootPendingEntries { get; init; } = [];
 
     /// <summary>Only a fully clean revert clears the dirty flag.</summary>
     public bool Clean => Deferred == 0 && Failed == 0;

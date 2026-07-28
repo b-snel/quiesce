@@ -92,16 +92,126 @@ public class ViewConstructionTests
     [Fact]
     public void All_pages_construct()
     {
+        using var temp = new TempDataRoot();
+
         var built = OnStaThread(() => new UserControl[]
         {
             new DashboardPage(CleanState()),
             new FeaturesPage(CleanState()),
+            // Given a throwaway data root rather than the real one: the page reads the user-added apps
+            // file, and a test has no business reading or writing C:\ProgramData\Quiesce.
+            new RunningAppsPage(CleanState() with { DataRoot = temp.Path }),
             new ServicesPage(),
             new WontDoPage(),
         });
 
-        Assert.Equal(4, built.Length);
+        Assert.Equal(5, built.Length);
         Assert.All(built, page => Assert.NotNull(page));
+    }
+
+    /// <summary>
+    /// Off entries sort above on ones, which is what makes the exceptions the user made visible instead of
+    /// scattered through three dozen rows.
+    /// </summary>
+    [Fact]
+    public void Features_lists_switched_off_entries_first()
+    {
+        using var temp = new TempDataRoot();
+
+        // "b.on" is enabled and sits later in the catalog; "c.off" is disabled and sits later still.
+        // Catalog order alone would give a, b, c — the sort has to put the two off rows in front.
+        new Core.Catalog.ProfileStore(temp.Path).SetEnabled("b.on", enabled: true);
+
+        var order = OnStaThread(() =>
+        {
+            var page = new FeaturesPage(StateWith(temp.Path, "a.off", "b.on", "c.off"));
+            return page.EntryList.Items.Cast<FeatureRow>().Select(r => r.EntryId).ToList();
+        });
+
+        Assert.Equal(["a.off", "c.off", "b.on"], order);
+    }
+
+    [Fact]
+    public void Select_all_then_select_none_moves_every_entry()
+    {
+        using var temp = new TempDataRoot();
+
+        var (afterAll, afterNone) = OnStaThread(() =>
+        {
+            var page = new FeaturesPage(StateWith(temp.Path, "a", "b", "c"));
+
+            page.SelectAllButton.RaiseEvent(new System.Windows.RoutedEventArgs(
+                System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            var all = new Core.Catalog.ProfileStore(temp.Path).ActiveEnabled().Count;
+
+            page.SelectNoneButton.RaiseEvent(new System.Windows.RoutedEventArgs(
+                System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            var none = new Core.Catalog.ProfileStore(temp.Path).ActiveEnabled().Count;
+
+            return (all, none);
+        });
+
+        Assert.Equal(3, afterAll);
+        Assert.Equal(0, afterNone);
+    }
+
+    /// <summary>
+    /// The enabled set describes what is currently applied while engaged, so changing it would
+    /// desynchronize the journal from the profile. Locked with a reason, never hidden.
+    /// </summary>
+    [Fact]
+    public void Bulk_buttons_are_disabled_while_engaged()
+    {
+        using var temp = new TempDataRoot();
+
+        var state = StateWith(temp.Path, "a") with
+        {
+            MachineState = new QuiesceState { IsDirty = true, ActiveSessionId = Guid.NewGuid() },
+        };
+
+        var (all, none) = OnStaThread(() =>
+        {
+            var page = new FeaturesPage(state);
+            return (page.SelectAllButton.IsEnabled, page.SelectNoneButton.IsEnabled);
+        });
+
+        Assert.False(all);
+        Assert.False(none);
+    }
+
+    private static AppState StateWith(string dataRoot, params string[] entryIds)
+    {
+        var catalog = EngineTestHarness.CatalogOf(
+            [.. entryIds.Select(id => EngineTestHarness.DwordEntry(id, valueName: id))]);
+
+        return new AppState
+        {
+            MachineState = new QuiesceState { IsDirty = false },
+            DataRoot = dataRoot,
+            Catalog = catalog,
+            CatalogPath = "test",
+        };
+    }
+
+    /// <summary>A throwaway data root, so a page that writes a profile does not write the real one.</summary>
+    private sealed class TempDataRoot : IDisposable
+    {
+        public string Path { get; } =
+            System.IO.Path.Combine(System.IO.Path.GetTempPath(), "quiesce-tests", Guid.NewGuid().ToString("N"));
+
+        public void Dispose()
+        {
+            try
+            {
+                Directory.Delete(Path, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
     }
 
     [Fact]

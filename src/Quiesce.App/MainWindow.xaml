@@ -12,12 +12,40 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <ui:TitleBar Grid.Row="0" Title="Quiesce" Icon="pack://application:,,,/Assets/logo-dark.png" />
 
-        <Grid Grid.Row="1">
+        <!-- Reboot warning. Lives in the shell rather than on a page because it is a fact about the
+             machine, not about whatever page happens to be open: a change that has not taken effect yet
+             is equally misleading whichever list the user is reading. Stays up until a restart is
+             actually observed - dismissing it would leave the machine in a state the app had stopped
+             mentioning. -->
+        <Border x:Name="RebootBanner"
+                Grid.Row="1"
+                Margin="12,0,12,8"
+                Padding="16,12"
+                CornerRadius="6"
+                Visibility="Collapsed"
+                Background="#33D29922">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="&#x21BB;" FontSize="20" Margin="0,0,12,0"
+                           VerticalAlignment="Top" Opacity="0.85" />
+                <StackPanel Grid.Column="1">
+                    <TextBlock x:Name="RebootHeadline" FontWeight="SemiBold" FontSize="14" />
+                    <TextBlock x:Name="RebootDetail" Margin="0,4,0,0" Opacity="0.8"
+                               TextWrapping="Wrap" FontSize="12.5" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="220" />
                 <ColumnDefinition Width="*" />

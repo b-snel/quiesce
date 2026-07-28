@@ -53,7 +53,13 @@ internal sealed class CliEnvironment
             $"No catalog found. Set {CatalogEnvVar} or place catalog\\tweaks.json next to the executable. " +
             "(Note: restore, revert-all and recover do not need a catalog.)");
 
-        return CatalogLoader.LoadFile(path);
+        // Merged with the apps the user added, which live in the data root and are validated by the same
+        // loader. A failure here is deliberately loud rather than degraded: the CLI is the path used when
+        // something is already wrong, and silently planning without the user's own entries would make
+        // `print-plan` disagree with the GUI for reasons neither would explain.
+        return UserCatalogStore.Merge(
+            CatalogLoader.LoadFile(path),
+            new UserCatalogStore(Paths.DataRoot).Load());
     }
 
     public TransactionEngine CreateEngine()

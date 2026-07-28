@@ -154,6 +154,7 @@ public sealed class TransactionEngine(
             Target = process is null
                 ? op.TargetDescription
                 : $"{op.TargetDescription} — {process.ImageName} (pid {process.Identity.Pid})",
+            RequiresReboot = entry.RequiresReboot,
             ProcessBefore = process,
             ProcessAction = op.Action,
             IntendedPriority = op.ThrottleTo is { } level ? ProcessThrottler.ToPriorityClass(level) : null,
@@ -257,6 +258,7 @@ public sealed class TransactionEngine(
             Scope = entry.Scope,
             Op = op,
             Target = target.ToString(),
+            RequiresReboot = entry.RequiresReboot,
             RegistryTarget = target,
             Prior = prior,
             IntendedNew = intended,
@@ -275,6 +277,7 @@ public sealed class TransactionEngine(
             Scope = entry.Scope,
             Op = op,
             Target = $"service {op.Service}",
+            RequiresReboot = entry.RequiresReboot,
             ServiceBefore = before,
             IntendedStartType = intended,
             IntendedStop = stop,
@@ -362,6 +365,7 @@ public sealed class TransactionEngine(
                 EntryId = step.EntryId,
                 Scope = step.Scope,
                 Target = step.Target,
+                RequiresReboot = step.RequiresReboot,
                 IntendedNew = step.IntendedNew,
                 Process = step.ProcessBefore?.ToPrior(),
                 IntendedProcessAction = step.ProcessAction,
@@ -378,11 +382,17 @@ public sealed class TransactionEngine(
         var rolledBackEntries = new List<string>();
         var diagnoses = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var notes = new List<string>();
+        var rebootEntries = new List<string>();
 
         foreach (var entryGroup in effective.GroupBy(s => s.EntryId))
         {
             var appliedInEntry = new List<AppliedStep>();
             var entryFailed = false;
+
+            // Compared against the running total after the group rather than counted separately, because
+            // "applied" is incremented from five different branches — including the close, which produces
+            // no AppliedStep and so is invisible to appliedInEntry.
+            var appliedBeforeEntry = applied;
 
             foreach (var step in entryGroup)
             {
@@ -477,6 +487,7 @@ public sealed class TransactionEngine(
                     EntryId = step.EntryId,
                     Scope = step.Scope,
                     Target = step.Target,
+                    RequiresReboot = step.RequiresReboot,
                     RegistryTarget = target,
                     Prior = prior,
                     IntendedNew = step.IntendedNew,
@@ -545,6 +556,14 @@ public sealed class TransactionEngine(
                 {
                     broadcaster.Broadcast(kind);
                 }
+
+                // Only an entry that actually changed something owes a restart. An entry every step of
+                // which was already lean changed nothing, so warning about it would send the user to
+                // reboot for a machine that is already in the state they asked for.
+                if (entryGroup.First().RequiresReboot && applied > appliedBeforeEntry)
+                {
+                    rebootEntries.Add(entryGroup.Key);
+                }
             }
         }
 
@@ -555,7 +574,16 @@ public sealed class TransactionEngine(
         // when a revert completes cleanly.
         if (applied == 0 && rolledBackEntries.Count == 0)
         {
-            _state.Save(new QuiesceState { IsDirty = false, ActiveSessionId = null });
+            // `state with` rather than a fresh QuiesceState: a reboot already owed from an earlier
+            // session is still owed, and constructing a blank state here would silently retract it.
+            _state.Save(state with { IsDirty = false, ActiveSessionId = null });
+        }
+        else if (rebootEntries.Count > 0)
+        {
+            // Rebuilt from `state` rather than re-read, so this is exactly what was written before the
+            // first mutation plus the marker. Nothing else writes the state file in between.
+            _state.Save((state with { IsDirty = true, ActiveSessionId = sessionId })
+                .WithRebootPending(rebootEntries));
         }
 
         return new EngageResult
@@ -566,6 +594,7 @@ public sealed class TransactionEngine(
             RolledBackEntries = rolledBackEntries,
             Diagnoses = diagnoses,
             Notes = notes,
+            RebootPendingEntries = rebootEntries,
         };
     }
 
@@ -627,6 +656,7 @@ public sealed class TransactionEngine(
                 EntryId = step.EntryId,
                 Scope = step.Scope,
                 Target = step.Target,
+                RequiresReboot = step.RequiresReboot,
                 Process = prior,
                 IntendedProcessAction = op.Action,
                 IntendedPriority = intendedPriority,
@@ -788,6 +818,7 @@ public sealed class TransactionEngine(
             EntryId = step.EntryId,
             Scope = step.Scope,
             Target = step.Target,
+            RequiresReboot = step.RequiresReboot,
             Service = op.Service,
             ServicePrior = before.ToPrior(),
             IntendedStartType = intended,
@@ -1241,6 +1272,10 @@ public sealed class TransactionEngine(
         var broadcasts = new HashSet<ActivationKind>();
         var stateReplays = new List<ActivationState>();
 
+        // Undoing a reboot-requiring change needs a reboot too, and only the steps that actually wrote
+        // something count — a conflict-kept-current step changed nothing, so it owes nothing.
+        var rebootEntries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         // Dependency order, not naive reverse: services and power first, then registry, then processes,
         // then activation broadcasts. Unwinding strictly newest-first would restore registry values that
         // a service reads at startup *after* restarting that service, so it would come back having
@@ -1256,15 +1291,27 @@ public sealed class TransactionEngine(
 
         foreach (var step in ordered)
         {
+            var revertedBefore = reverted;
+
             if (step.Service is { } serviceName)
             {
                 RevertServiceStep(journal, step, serviceName, rebootedSinceApply, messages, ref reverted, ref failed);
+                if (step.RequiresReboot && reverted > revertedBefore)
+                {
+                    rebootEntries.Add(step.EntryId);
+                }
+
                 continue;
             }
 
             if (step.Process is { } processPrior)
             {
                 RevertProcessStep(journal, step, processPrior, messages, ref reverted, ref failed);
+                if (step.RequiresReboot && reverted > revertedBefore)
+                {
+                    rebootEntries.Add(step.EntryId);
+                }
+
                 continue;
             }
 
@@ -1337,6 +1384,11 @@ public sealed class TransactionEngine(
 
                 journal.Append(new RevertedRecord { StepId = step.StepId, Outcome = outcome });
                 reverted++;
+
+                if (step.RequiresReboot && outcome != "conflict-kept-current")
+                {
+                    rebootEntries.Add(step.EntryId);
+                }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -1370,15 +1422,33 @@ public sealed class TransactionEngine(
 
         journal.Append(new RevertCompleteRecord { Reverted = reverted, Deferred = deferred, Failed = failed });
 
-        var result = new RevertResult { Reverted = reverted, Deferred = deferred, Failed = failed, Messages = messages };
+        var result = new RevertResult
+        {
+            Reverted = reverted,
+            Deferred = deferred,
+            Failed = failed,
+            Messages = messages,
+            RebootPendingEntries = [.. rebootEntries.OrderBy(x => x, StringComparer.Ordinal)],
+        };
 
-        if (result.Clean)
+        // Written whether or not the revert came out clean. A step that was actually put back owes a
+        // restart regardless of what happened to the steps beside it, and a revert that reports
+        // "machine clean" while a reboot-requiring value is back in the registry but not yet in effect is
+        // telling the truth about the registry and the wrong thing about the machine.
+        if (result.Clean || rebootEntries.Count > 0)
         {
             var state = _state.Load();
-            if (state.ActiveSessionId == sessionId || state.ActiveSessionId is null)
+            var updated = rebootEntries.Count > 0 ? state.WithRebootPending(rebootEntries) : state;
+
+            // Only this session's own dirty flag, and only on a clean revert - unchanged from before.
+            // `updated with` rather than a fresh QuiesceState so the marker just set (or one already
+            // there from an earlier session) is not wiped by the clear.
+            if (result.Clean && (state.ActiveSessionId == sessionId || state.ActiveSessionId is null))
             {
-                _state.Save(new QuiesceState { IsDirty = false, ActiveSessionId = null });
+                updated = updated with { IsDirty = false, ActiveSessionId = null };
             }
+
+            _state.Save(updated);
         }
 
         return result;
@@ -1442,8 +1512,9 @@ public sealed class TransactionEngine(
         var sessionId = state.ActiveSessionId ?? SessionsNewestFirst().FirstOrDefault();
         if (sessionId == Guid.Empty)
         {
-            // Dirty flag with no journal on disk: nothing recoverable. Clear rather than wedge.
-            _state.Save(new QuiesceState { IsDirty = false, ActiveSessionId = null });
+            // Dirty flag with no journal on disk: nothing recoverable. Clear rather than wedge - but
+            // `state with`, so clearing the flag does not also retract an outstanding reboot warning.
+            _state.Save(state with { IsDirty = false, ActiveSessionId = null });
             return new RevertResult { Reverted = 0, Deferred = 0, Failed = 0, Messages = ["dirty flag set but no session journal found; cleared."] };
         }
 

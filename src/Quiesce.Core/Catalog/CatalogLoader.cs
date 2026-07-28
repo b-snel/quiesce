@@ -223,10 +223,17 @@ public static class CatalogLoader
             // Separator-delimited at both ends, so the fragment names a directory rather than a prefix.
             // Without the trailing separator, "\Discord" would also match "\DiscordCanary\", and a
             // one-character fragment would match every path on the machine.
-            if (!directory.StartsWith('\\') || !directory.EndsWith('\\'))
+            //
+            // A drive-rooted fragment ("C:\Program Files\Foo\") is accepted alongside the drive-relative
+            // form, and is strictly the more specific of the two: anchored at the root, it cannot match
+            // the same directory name appearing deeper in an unrelated path. The shipped catalog uses the
+            // relative form because an install can be on any drive; the entries the discovery flow writes
+            // use the rooted form because it knows exactly where the application is.
+            if (!IsAnchoredDirectoryFragment(directory))
             {
-                Fail($"directory fragment '{directory}' must start and end with a backslash, so that it " +
-                     "names a directory and cannot match a longer name that merely starts the same way.");
+                Fail($"directory fragment '{directory}' must end with a backslash and must either start " +
+                     "with one or be drive-rooted, so that it names a directory and cannot match a longer " +
+                     "name that merely starts the same way.");
             }
 
             if (directory.Trim('\\').Length == 0)
@@ -254,6 +261,30 @@ public static class CatalogLoader
             default:
                 break;
         }
+    }
+
+    /// <summary>
+    /// Whether a fragment is anchored at both ends: <c>\Foo\Bar\</c> or <c>C:\Foo\Bar\</c>.
+    /// </summary>
+    /// <remarks>
+    /// A UNC fragment is deliberately not accepted. Stripping <c>\\server\share</c> leaves a fragment
+    /// anchored at nothing in particular, and <c>Matches</c> is a substring test — a fragment that begins
+    /// mid-path is exactly the kind that matches somewhere nobody intended.
+    /// </remarks>
+    public static bool IsAnchoredDirectoryFragment(string fragment)
+    {
+        if (string.IsNullOrEmpty(fragment) || !fragment.EndsWith('\\'))
+        {
+            return false;
+        }
+
+        if (fragment.StartsWith(@"\\", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return fragment.StartsWith('\\')
+            || (fragment.Length >= 3 && char.IsAsciiLetter(fragment[0]) && fragment[1] == ':' && fragment[2] == '\\');
     }
 
     private static void ValidateService(ServiceOpSpec op, CatalogEntry entry, Action<string> Fail)

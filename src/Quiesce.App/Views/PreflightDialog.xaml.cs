@@ -44,6 +44,14 @@ public partial class PreflightDialog
             Summary.Text += $"  ·  {refused.Count} refused by guardrails";
         }
 
+        // Said before the user approves, not discovered afterwards. Some of these entries are the ones
+        // most likely to be judged "didn't do anything" — the effect simply is not there yet.
+        var needsReboot = plan.RebootRequiringEntries;
+        if (needsReboot.Count > 0)
+        {
+            Summary.Text += $"  ·  {needsReboot.Count} needs a restart";
+        }
+
         ReversibilityNote.Text = plan.RequiresElevation
             ? "Every change is written to Quiesce's journal before it is made, so Restore puts it all back — including after a crash."
             : "These are per-user changes. Every one is journaled before it is made and fully reversible.";
@@ -108,7 +116,7 @@ public sealed record PreflightRow
             // for a service and dereferenced the registry prior otherwise, which a process step - carrying
             // neither - would have turned into a null reference in the middle of the approval dialog.
             PriorText = Prior(step),
-            NewText = Change(step),
+            NewText = Change(step) + (step.RequiresReboot ? "  (in effect after a restart)" : string.Empty),
             ActivationText = activations.Count > 0
                 ? $"then notifies Windows: {string.Join(", ", activations)}"
                 : string.Empty,

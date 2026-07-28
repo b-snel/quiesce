@@ -83,6 +83,10 @@ public sealed record PlannedRecord : JournalRecord
     [JsonPropertyName("target")]
     public required string Target { get; init; }
 
+    /// <summary>This change only takes full effect after a restart.</summary>
+    [JsonPropertyName("requiresReboot")]
+    public bool RequiresReboot { get; init; }
+
     /// <summary>Registry target, when this step is a registry op.</summary>
     [JsonPropertyName("registryTarget")]
     public RegistryTarget? RegistryTarget { get; init; }
@@ -129,6 +133,18 @@ public sealed record ApplyingRecord : JournalRecord
     /// <summary>Human-readable identity, so a journal is legible without the catalog.</summary>
     [JsonPropertyName("target")]
     public required string Target { get; init; }
+
+    /// <summary>
+    /// This change only takes full effect after a restart, so undoing it does too.
+    /// </summary>
+    /// <remarks>
+    /// Journalled because revert reads only these records. Absent from journals written before this field
+    /// existed, where it deserializes to false — those reverts will not raise the warning. Understating a
+    /// reboot need on a journal from an older build is a smaller wrong than any of the alternatives, and
+    /// it self-corrects on the next engage.
+    /// </remarks>
+    [JsonPropertyName("requiresReboot")]
+    public bool RequiresReboot { get; init; }
 
     // Exactly one of the registry, service or process groups is populated, decided by the op kind. Kept
     // as concrete optional fields rather than a polymorphic union because the revert binary must be

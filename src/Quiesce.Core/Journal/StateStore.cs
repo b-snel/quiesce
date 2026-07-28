@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Quiesce.Core.Platform;
 
 namespace Quiesce.Core.Journal;
 
@@ -22,6 +23,87 @@ public sealed record QuiesceState
 
     [JsonPropertyName("activeSessionId")]
     public Guid? ActiveSessionId { get; init; }
+
+    /// <summary>
+    /// Uptime in milliseconds at the moment a change needing a restart was applied or reverted.
+    /// Null means nothing is owed a reboot.
+    /// </summary>
+    /// <remarks>
+    /// Uptime rather than a boot id, and this is the interesting decision. <see cref="QuiescePaths.IsSameBoot"/>
+    /// derives boot time as <c>now - uptime</c>, which cannot distinguish a reboot from a resume: the two
+    /// readings are taken from different clocks, and sleep advances one without the other. Deciding a
+    /// reboot happened when the machine merely woke up would retract this warning without a restart, and
+    /// a warning that disappears on its own is worse than no warning — the user concludes the change took
+    /// effect.
+    /// <para>
+    /// <see cref="Environment.TickCount64"/> is monotonic within a boot and resets on one, so
+    /// "current uptime is lower than the recorded uptime" is positive evidence of a restart and nothing
+    /// else produces it. See <see cref="RebootPending"/> for the case this deliberately gets wrong.
+    /// </para>
+    /// </remarks>
+    [JsonPropertyName("rebootPendingSinceUptimeMs")]
+    public long? RebootPendingSinceUptimeMs { get; init; }
+
+    /// <summary>Boot id when the marker was set. Recorded for legibility, not used for the decision.</summary>
+    [JsonPropertyName("rebootPendingBootId")]
+    public string? RebootPendingBootId { get; init; }
+
+    /// <summary>Which entries are waiting on a restart, so the warning can name them.</summary>
+    [JsonPropertyName("rebootPendingEntryIds")]
+    public IReadOnlyList<string> RebootPendingEntryIds { get; init; } = [];
+
+    /// <summary>
+    /// A change needing a restart has been made and no restart has been observed since.
+    /// </summary>
+    /// <remarks>
+    /// Errs toward over-warning, on purpose. The one case it gets wrong is a machine that reboots and
+    /// then runs longer than its previous uptime before anything reads this file — the marker survives
+    /// and the warning lingers after a restart that did happen. A stale "you should reboot" costs the
+    /// user one unnecessary restart; the opposite error tells them a change is live when it is not, which
+    /// is the class of lie this project is organised against. Every writer drops a stale marker, and the
+    /// GUI reads at startup, so lingering needs an unusual sequence to happen at all.
+    /// </remarks>
+    [JsonIgnore]
+    public bool RebootPending =>
+        RebootPendingSinceUptimeMs is { } marked && Environment.TickCount64 >= marked;
+
+    /// <summary>Adds entries to the reboot-pending set and stamps the current uptime.</summary>
+    public QuiesceState WithRebootPending(IEnumerable<string> entryIds)
+    {
+        ArgumentNullException.ThrowIfNull(entryIds);
+
+        // Union rather than replace: two engages in one boot both owe a reboot, and the second must not
+        // erase the first entry's claim on it.
+        var union = RebootPending
+            ? RebootPendingEntryIds.Concat(entryIds)
+            : entryIds;
+
+        var ids = union.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.Ordinal).ToList();
+        if (ids.Count == 0)
+        {
+            return this;
+        }
+
+        return this with
+        {
+            // Re-stamped to now, not left at the earlier value: the marker means "at least one restart is
+            // owed since this point", and the newest change is the one that has to survive.
+            RebootPendingSinceUptimeMs = Environment.TickCount64,
+            RebootPendingBootId = QuiescePaths.CurrentBootId(),
+            RebootPendingEntryIds = ids,
+        };
+    }
+
+    /// <summary>Drops a marker the machine has demonstrably rebooted past. Applied on every write.</summary>
+    public QuiesceState WithoutStaleRebootMarker() =>
+        RebootPendingSinceUptimeMs is null || RebootPending
+            ? this
+            : this with
+            {
+                RebootPendingSinceUptimeMs = null,
+                RebootPendingBootId = null,
+                RebootPendingEntryIds = [],
+            };
 }
 
 /// <summary>
@@ -109,8 +191,20 @@ public sealed class StateStore(string dataRoot)
         return state;
     }
 
+    /// <summary>
+    /// Writes the state file atomically, dropping a reboot marker the machine has already rebooted past.
+    /// </summary>
+    /// <remarks>
+    /// The stale-marker sweep is here rather than at each call site so that no writer can forget it, and
+    /// because every writer holds the state anyway. It only ever removes a marker whose restart has been
+    /// positively observed — see <see cref="QuiesceState.RebootPending"/>.
+    /// </remarks>
     public void Save(QuiesceState state)
     {
+        ArgumentNullException.ThrowIfNull(state);
+
+        state = state.WithoutStaleRebootMarker();
+
         Directory.CreateDirectory(dataRoot);
 
         var tmp = StatePath + ".tmp";
