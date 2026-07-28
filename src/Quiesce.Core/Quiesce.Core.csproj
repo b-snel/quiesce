@@ -6,6 +6,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- SessionGuard.OverrideForTests is internal on purpose: a public mutable static that switches
+         off a safety check is a back door, not a test seam. This is the only way in. -->
+    <InternalsVisibleTo Include="Quiesce.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Windows.CsWin32">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

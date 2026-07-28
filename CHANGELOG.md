@@ -70,6 +70,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   token, and never restarts a service that was stopped.
 - **M4** — Refused steps are shown with their reason in both the CLI and the preflight dialog. A
   guardrail the user cannot see is indistinguishable from a tweak that quietly did nothing.
+- **M4** — `quiesce inventory` reports whether any session is remote, since that changes which
+  guardrails are active and a support bundle that omits it cannot explain a refusal.
+
+### Hardening (from the M4 adversarial guardrail review)
+
+- **Remote-session detection rewritten.** `GetSystemMetrics(SM_REMOTESESSION)` reports only on the
+  *calling process's own* session, so an elevated helper or scheduled task running in session 0 gets
+  `FALSE` while the operator sits on RDP in session 1 — and the network group unlocks. Now enumerates
+  every session via `WTSEnumerateSessions` + `WTSQuerySessionInformation`, and fails closed.
+- **`SessionGuard.OverrideForTests` is now `internal`** behind `InternalsVisibleTo`. A public mutable
+  static that switches off a safety check is a back door, not a test seam.
+- **Tier-0 additions:** `NvContainerLocalSystem` and `nvagent` (hosts ShadowPlay, carries a RUN
+  PROCESS recovery action), `EasyAntiCheat`/`EasyAntiCheat_EOS`/`BEService`/`vgc` (ban vector), and
+  `nordvpn-service`/`NordUpdaterService` — an unclean VPN stop can leave a WFP kill-switch filter
+  blocking all traffic with no service left to remove it, severing RDP while every network guardrail
+  reported a pass.
+- **Per-user service instances** (`CryptSvc_4a2f1`) now inherit their template's protection.
+- **Dependents get the full refusal predicate**, not just the tier-0 test: a dependent that is itself
+  unstoppable now blocks its parent.
+- **A stopped service no longer gets a vacuous co-tenancy pass.** PID 0 means "not evaluable", never
+  "no co-tenants".
+- **Across a reboot, restore puts back configuration only** and starts nothing. The SCM has already
+  started or deliberately not started everything per its start type; forcing a start would run
+  services the machine had legitimately left stopped.
+- **Two identical copies of the remote-fragile list** collapsed into one. Two copies of a safety list
+  is how drift happens.
+- **Co-tenancy rationale corrected.** Stopping a service does *not* stop its co-tenants; the hazard is
+  a fault during the stop taking the shared host down, after which the co-tenants die without
+  reporting `SERVICE_STOPPED` and their failure actions fire — and seven tier-0 services on this
+  machine are configured with REBOOT at 30–120s. The false version was easy to disprove, and
+  disproving it would have got the check deleted.
 
 ### Fixed
 

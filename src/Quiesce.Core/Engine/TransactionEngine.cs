@@ -530,6 +530,7 @@ public sealed class TransactionEngine(
         JournalWriter journal,
         ApplyingRecord step,
         string serviceName,
+        bool rebootedSinceApply,
         List<string> messages,
         ref int reverted,
         ref int failed)
@@ -571,6 +572,18 @@ public sealed class TransactionEngine(
             }
 
             services.SetStartType(serviceName, priorStartType, prior.DelayedAutostart ?? false);
+
+            // Across a reboot, "was running" is not a state to restore — the SCM already started
+            // (or deliberately has not yet started) everything according to its start type at boot.
+            // Forcing a start here would run services the machine had legitimately left stopped,
+            // and a delayed-auto service that simply has not reached its delay yet is the common
+            // case. Restore the configuration and let Windows decide what runs.
+            if (rebootedSinceApply)
+            {
+                journal.Append(new RevertedRecord { StepId = step.StepId, Outcome = "restored-config-only" });
+                reverted++;
+                return;
+            }
 
             // Only restart what was actually running. A Manual service that was stopped must stay
             // stopped, and starting it "to be safe" would leave the machine in a state it was
@@ -686,6 +699,11 @@ public sealed class TransactionEngine(
 
         var pending = PendingSteps(read.Records);
 
+        // Whether this revert is running in a different boot from the apply. It changes what
+        // "restore the running state" can honestly mean for services.
+        var rebootedSinceApply = read.Records.OfType<SessionStartRecord>().FirstOrDefault() is { } start
+            && !QuiescePaths.IsSameBoot(start.BootId);
+
         using var journal = JournalWriter.Open(sessionDir);
         journal.Append(new RevertStartRecord { Initiator = initiator });
 
@@ -708,7 +726,7 @@ public sealed class TransactionEngine(
         {
             if (step.Service is { } serviceName)
             {
-                RevertServiceStep(journal, step, serviceName, messages, ref reverted, ref failed);
+                RevertServiceStep(journal, step, serviceName, rebootedSinceApply, messages, ref reverted, ref failed);
                 continue;
             }
 

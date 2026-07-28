@@ -3,10 +3,14 @@ using Quiesce.Core.Platform;
 namespace Quiesce.Core;
 
 /// <summary>
-/// Hard safety limits, expressed as compile-time constants that catalog data can only ever
-/// <em>narrow</em>, never widen. A tweak file shipped by anyone — including a future me — cannot
-/// talk Quiesce into touching anything named here.
+/// Hard safety limits, expressed as compile-time constants.
 /// </summary>
+/// <remarks>
+/// Catalog data may only ever <em>shrink the set of things Quiesce is willing to touch</em>. It can
+/// decline to use a permitted capability; it can never grant one. Nothing in a tweak file — shipped
+/// by anyone, including a future me — can talk Quiesce into touching a name listed here, and the
+/// catalog loader rejects any file that tries.
+/// </remarks>
 /// <remarks>
 /// Every entry earned its place from a specific, verified failure mode rather than from caution.
 /// The reasons are recorded next to each group because a guardrail whose rationale is lost is a
@@ -64,6 +68,20 @@ public static class Guardrails
 
             // Human input and camera.
             "hidserv", "camsvc",
+
+            // NVIDIA. NvContainerLocalSystem hosts ShadowPlay and the overlay and carries a
+            // RUN PROCESS recovery action, so an unclean stop re-launches it in an unknown state.
+            "NvContainerLocalSystem", "nvagent",
+
+            // Anti-cheat. Interfering with a kernel anti-cheat near a protected game is a
+            // hardware-ban vector, and an EAC ban propagates to every EAC title on this hardware.
+            "EasyAntiCheat", "EasyAntiCheat_EOS", "BEService", "vgc",
+
+            // Third-party VPN. These install WFP filters through BFE; an unclean stop can leave a
+            // kill-switch block-all filter in place with no service left to remove it - total
+            // network loss, and every network guardrail passed because no network service was
+            // touched.
+            "nordvpn-service", "NordUpdaterService",
         };
 
     /// <summary>
@@ -98,10 +116,22 @@ public static class Guardrails
             return true;
         }
 
-        // Co-tenancy: several services can share one svchost. Stopping a service whose host also
-        // runs a tier-0 service risks taking the whole process down - and the DcomLaunch group in
-        // particular is CRITICAL_PROCESS_DIED (0xEF), an instant bugcheck.
-        if (service.HostProcessId != 0)
+        // Co-tenancy. The hazard is NOT that stopping a service stops its co-tenants - it does not;
+        // the SCM unloads only that service's DLL and the host survives. The hazard is that the
+        // service faults inside ServiceMain or DllUnload during the stop and takes the whole host
+        // process with it. Co-tenants then die WITHOUT reporting SERVICE_STOPPED, which is exactly
+        // the condition that queues their failure actions - and on this machine DcomLaunch, RpcSs,
+        // Power, mpssvc, CoreMessagingRegistrar, BrokerInfrastructure and SystemEventsBroker are all
+        // configured with REBOOT recovery actions at 30-120 second delays. So the downside is a
+        // bugcheck or a forced restart mid-game, not a tidy cascade.
+        //
+        // Stated precisely because the false version ("stopping A stops its co-tenants") is easy to
+        // disprove, and someone who disproves it will delete the check.
+        // A stopped service reports PID 0, which makes this check VACUOUS rather than passing: we
+        // have learned nothing about where it would land if it started. That is only tolerable
+        // because a stopped service is never stopped again - the apply path skips it - so the
+        // co-tenancy question never becomes live without a fresh query first.
+        if (service.HostProcessId != 0 && service.RunState == ServiceRunState.Running)
         {
             var coTenants = control.ServicesInHostProcess(service.HostProcessId);
             var protectedTenant = coTenants.FirstOrDefault(
@@ -133,12 +163,34 @@ public static class Guardrails
 
         // Dependents must be handled explicitly, never implicitly: stopping a service the SCM will
         // cascade from can take down something the user never agreed to.
-        var blockingDependent = service.Dependents.FirstOrDefault(IsServiceProtected);
-        if (blockingDependent is not null)
+        //
+        // The full refusal predicate is applied to each dependent, not merely the tier-0 test - a
+        // dependent that is itself unstoppable, or that shares a host with a protected service,
+        // blocks its parent for exactly the same reasons it blocks itself.
+        //
+        // Note this list is the TRANSITIVE closure (EnumDependentServices returns the whole chain,
+        // verified against the registry dependency graph), so there is no recursion to do here and
+        // adding some would double-visit services and scramble the stop order.
+        foreach (var dependent in service.Dependents)
         {
-            reason =
-                $"{service.Service} is required by {blockingDependent}, which is on the never-touch list.";
-            return true;
+            if (IsServiceProtected(dependent))
+            {
+                reason = $"{service.Service} is required by {dependent}, which is on the never-touch list.";
+                return true;
+            }
+
+            var dependentState = control.Query(dependent);
+            if (!dependentState.Present)
+            {
+                continue;
+            }
+
+            if (dependentState.RunState == ServiceRunState.Running && !dependentState.AcceptsStop)
+            {
+                reason =
+                    $"{service.Service} is required by {dependent}, which is running and cannot be stopped cleanly.";
+                return true;
+            }
         }
 
         reason = string.Empty;
@@ -213,24 +265,50 @@ public static class Guardrails
         System.Diagnostics.ProcessPriorityClass.AboveNormal;
 
     /// <summary>
-    /// Service groups locked out entirely while the operator is on a remote session.
+    /// Service groups locked out entirely while any session on the machine is remote.
     /// </summary>
     /// <remarks>
-    /// Read <c>SM_REMOTESESSION</c> live, never cached — a user can connect or disconnect while the
-    /// app is open.
+    /// Evaluated through <see cref="SessionGuard.IsRemoteSession"/>, which reads live and never
+    /// caches — a user can connect or disconnect while the app is open.
     /// </remarks>
-    public static readonly IReadOnlySet<string> RemoteSessionLockedServices =
-        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "TermService", "UmRdpService", "SessionEnv", "WlanSvc", "Dhcp", "Dnscache",
-            "nsi", "netprofm", "Wcmsvc", "LanmanWorkstation", "LanmanServer", "RemoteAccess",
-        };
+    public static IReadOnlySet<string> RemoteSessionLockedServices => RemoteFragileServices;
 
     /// <summary>
     /// Returns true when <paramref name="serviceName"/> may never be reconfigured by Quiesce.
     /// </summary>
-    public static bool IsServiceProtected(string serviceName) =>
-        NeverTouchServices.Contains(serviceName);
+    /// <remarks>
+    /// Per-user service instances carry a <c>_&lt;luid&gt;</c> suffix — <c>CDPUserSvc_4a2f1</c> is an
+    /// instance of the <c>CDPUserSvc</c> template — so a protected template name would not match its
+    /// own instances without normalizing the suffix away.
+    /// </remarks>
+    public static bool IsServiceProtected(string serviceName)
+    {
+        ArgumentNullException.ThrowIfNull(serviceName);
+
+        if (NeverTouchServices.Contains(serviceName))
+        {
+            return true;
+        }
+
+        var underscore = serviceName.LastIndexOf('_');
+        if (underscore <= 0 || underscore == serviceName.Length - 1)
+        {
+            return false;
+        }
+
+        // Only strip a suffix that actually looks like a LUID (hex), so a service legitimately
+        // named with a trailing underscore segment is not silently reclassified.
+        var suffix = serviceName.AsSpan(underscore + 1);
+        foreach (var c in suffix)
+        {
+            if (!Uri.IsHexDigit(c))
+            {
+                return false;
+            }
+        }
+
+        return NeverTouchServices.Contains(serviceName[..underscore]);
+    }
 
     /// <summary>
     /// Returns true when a process may never be closed or throttled by Quiesce.

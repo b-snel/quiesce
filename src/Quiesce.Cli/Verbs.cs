@@ -25,6 +25,12 @@ internal static class Verbs
         Console.WriteLine($"machine: {(state.IsDirty ? $"ENGAGED (session {state.ActiveSessionId:D})" : "clean")}");
         Console.WriteLine($"data:    {env.Paths.DataRoot}");
 
+        // Surfaced because it changes which guardrails are active, and because a support bundle
+        // that does not say whether the machine was remote cannot explain a refusal.
+        var remote = SessionGuard.IsRemoteSession();
+        Console.WriteLine(
+            $"session: {(remote ? "REMOTE — network, shell and Remote Desktop services are locked" : "local")}");
+
         if (env.CatalogPath is null)
         {
             // Still useful without a catalog: dirty state is what you need in a recovery situation.
