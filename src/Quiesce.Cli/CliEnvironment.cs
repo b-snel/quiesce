@@ -74,11 +74,8 @@ internal sealed class CliEnvironment
             new Win32ServiceControl());
     }
 
-    public static bool IsElevated()
-    {
-        using var identity = WindowsIdentity.GetCurrent();
-        return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
-    }
+    /// <summary>Delegates to the Core check so there is exactly one definition of "elevated".</summary>
+    public static bool IsElevated() => Elevation.IsElevated();
 
     /// <summary>
     /// The ACL preflight. Installed builds refuse to run when the catalog or data root is

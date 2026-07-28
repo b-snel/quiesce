@@ -309,10 +309,7 @@ public sealed class TransactionEngine(
                 }
                 catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException)
                 {
-                    writeFailure = ex is UnauthorizedAccessException
-                        ? "AccessDenied: Windows refused the write. This key is protected; the tweak may need " +
-                          "elevation, or may be locked by policy or Tamper Protection."
-                        : $"WriteFailed: {ex.Message}";
+                    writeFailure = DescribeWriteFailure(ex);
                 }
 
                 // Verify by re-reading the authoritative source. A non-throwing API call is not
@@ -606,6 +603,31 @@ public sealed class TransactionEngine(
             messages.Add($"step {step.StepId} ({serviceName}): revert failed: {ex.Message}");
             failed++;
         }
+    }
+
+    /// <summary>Renders a refused registry write as a diagnosis that can actually be acted on.</summary>
+    /// <remarks>
+    /// The first version returned a fixed sentence that discarded the exception and offered "the
+    /// tweak may need elevation" as a guess. On an elevated run that guess is simply false, and
+    /// with the real message and error code thrown away there was no way to tell a genuine ACL
+    /// denial from a policy engine or a kernel registry filter rejecting the write. It cost real
+    /// time on the first elevated run: one entry failed while seven sibling HKLM policy writes
+    /// succeeded, and the message pointed at the one explanation already ruled out. A diagnosis
+    /// that cannot be falsified is not a diagnosis.
+    /// </remarks>
+    private static string DescribeWriteFailure(Exception ex)
+    {
+        if (ex is not UnauthorizedAccessException)
+        {
+            return $"WriteFailed: {ex.Message} (0x{ex.HResult:X8})";
+        }
+
+        var cause = Platform.Elevation.IsElevated()
+            ? "The process is already elevated, so this is the key's own ACL, a policy engine, or a " +
+              "kernel registry filter - not a missing privilege."
+            : "The process is not elevated, and this key requires administrator rights.";
+
+        return $"AccessDenied: Windows refused the write. {cause} [{ex.Message}] (0x{ex.HResult:X8})";
     }
 
     /// <summary>Undoes one applied step, dispatching on which kind of prior it captured.</summary>
