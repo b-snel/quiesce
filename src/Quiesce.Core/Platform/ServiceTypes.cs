@@ -129,6 +129,18 @@ public interface IServiceControl
     /// <summary>Services hosted by <paramref name="processId"/>, for co-tenancy checks.</summary>
     IReadOnlyList<string> ServicesInHostProcess(uint processId);
 
+    /// <summary>
+    /// Every PID currently hosting at least one service.
+    /// </summary>
+    /// <remarks>
+    /// Feeds process classification. A service's host process must be managed through this service
+    /// layer and never through the process layer: closing or throttling <c>svchost.exe</c> directly
+    /// walks straight past the tier-0 list, the co-tenancy check and the remote-session lock, all of
+    /// which are keyed on service names. One call, because the alternative is a full SCM enumeration
+    /// per running process.
+    /// </remarks>
+    IReadOnlySet<uint> ServiceHostProcessIds();
+
     /// <summary>Sets start type and the delayed-auto flag, leaving all other config untouched.</summary>
     void SetStartType(string service, ServiceStartType startType, bool delayedAutostart);
 

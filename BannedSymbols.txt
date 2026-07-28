@@ -8,6 +8,10 @@
 ; EasyAntiCheat is installed on the target machine. Kernel anti-cheats treat injection and
 ; cross-process memory access against a protected game as cheat behaviour, and EAC bans
 ; propagate across every EAC title tied to the hardware ID.
+; BOTH overloads. The original entry named only Kill(bool), leaving the parameterless overload -
+; the one people actually reach for - permitted by a gate whose entire purpose is "never terminate
+; anything forcibly". Found while starting M5, before any process code existed to abuse it.
+M:System.Diagnostics.Process.Kill(); Use the graceful WM_CLOSE ladder. Kill discards unsaved work with no prompt.
 M:System.Diagnostics.Process.Kill(System.Boolean); Use ProcessCloseOp's graceful WM_CLOSE ladder. Direct Kill bypasses the save-prompt guard.
 
 ; --- Never raise a process above ABOVE_NORMAL. -----------------------------------------

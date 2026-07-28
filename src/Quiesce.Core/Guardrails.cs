@@ -420,4 +420,43 @@ public static class Guardrails
 
         return false;
     }
+
+    /// <summary>
+    /// Browser executables, as a class.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Closed by default, with a keep-alive toggle, because a browser with a few dozen tabs is
+    /// usually the largest single consumer of RAM and background CPU on a gaming machine.
+    /// </para>
+    /// <para>
+    /// <c>msedgewebview2</c> is deliberately absent, and is on <see cref="NeverTouchProcesses"/>
+    /// instead. It is not a browser the user is using — it hosts other applications' UI, including
+    /// Widgets, the new Outlook and several launcher panes, with six live instances on the target
+    /// machine. Closing it as if it were Edge takes those applications' windows with it.
+    /// </para>
+    /// <para>
+    /// Membership is checked against the image name, but eligibility still requires a readable image
+    /// path under a plausible install root — see <see cref="ProcessClassifier"/>. The name alone is
+    /// not enough: anything can be called <c>chrome.exe</c>.
+    /// </para>
+    /// </remarks>
+    public static readonly IReadOnlySet<string> BrowserImageNames =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "chrome", "msedge", "firefox", "brave", "opera", "opera_gx", "vivaldi", "chromium",
+            "librewolf", "waterfox", "tor",
+        };
+
+    /// <summary>True when <paramref name="imageName"/> names a browser, with or without <c>.exe</c>.</summary>
+    public static bool IsBrowser(string imageName)
+    {
+        ArgumentNullException.ThrowIfNull(imageName);
+
+        var bare = imageName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+            ? imageName[..^4]
+            : imageName;
+
+        return BrowserImageNames.Contains(bare);
+    }
 }

@@ -74,6 +74,12 @@ public sealed class FakeServiceControl : IServiceControl
             .Select(e => e.Name)
             .ToList();
 
+    public IReadOnlySet<uint> ServiceHostProcessIds() =>
+        _entries.Values
+            .Where(e => e.Present && e.HostProcessId != 0 && e.RunState == ServiceRunState.Running)
+            .Select(e => e.HostProcessId)
+            .ToHashSet();
+
     public void SetStartType(string service, ServiceStartType startType, bool delayedAutostart)
     {
         Log.Add($"config {service} -> {startType}{(delayedAutostart ? " delayed" : string.Empty)}");

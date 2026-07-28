@@ -130,6 +130,28 @@ public sealed class Win32ServiceControl : IServiceControl
             return [];
         }
 
+        return EnumerateServiceProcesses()
+            .Where(e => e.Pid == processId)
+            .Select(e => e.Name)
+            .ToList();
+    }
+
+    public IReadOnlySet<uint> ServiceHostProcessIds() =>
+        EnumerateServiceProcesses()
+            .Where(e => e.Pid != 0)
+            .Select(e => e.Pid)
+            .ToHashSet();
+
+    /// <summary>
+    /// One SCM enumeration returning every service and the PID currently hosting it.
+    /// </summary>
+    /// <remarks>
+    /// Shared because both callers used to do their own full enumeration, and the process classifier
+    /// needs the host-PID set once for every running process — doing it per process would mean one
+    /// full SCM enumeration per process, several hundred on a normal machine.
+    /// </remarks>
+    private static List<(string Name, uint Pid)> EnumerateServiceProcesses()
+    {
         using var scm = OpenManager(SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE);
 
         var bytesNeeded = 0;
@@ -154,15 +176,15 @@ public sealed class Win32ServiceControl : IServiceControl
                 return [];
             }
 
-            var results = new List<string>();
+            var results = new List<(string, uint)>();
             var size = Marshal.SizeOf<ENUM_SERVICE_STATUS_PROCESS>();
 
             for (var i = 0; i < count; i++)
             {
                 var entry = Marshal.PtrToStructure<ENUM_SERVICE_STATUS_PROCESS>(buffer + (i * size));
-                if (entry.ServiceStatusProcess.dwProcessId == processId && entry.lpServiceName is not null)
+                if (entry.lpServiceName is not null)
                 {
-                    results.Add(entry.lpServiceName);
+                    results.Add((entry.lpServiceName, entry.ServiceStatusProcess.dwProcessId));
                 }
             }
 
