@@ -1145,7 +1145,10 @@ public sealed class TransactionEngine(
 
         if (applied.Service is { } service && applied.ServicePrior is { } servicePrior && services is not null)
         {
-            RestoreService(service, servicePrior);
+            if (RestoreService(service, servicePrior) is { } serviceResidue)
+            {
+                return serviceResidue;
+            }
         }
 
         // A throttle is the only process work that has an inverse. A close never reaches here at all -
@@ -1171,19 +1174,30 @@ public sealed class TransactionEngine(
     /// back Automatic rather than being started while still marked Disabled. Only services that
     /// were actually running are started — a stopped Manual service must stay stopped.
     /// </remarks>
-    private void RestoreService(string service, ServiceSnapshot prior)
+    /// <returns>Null on a clean restore, or a description of what was left behind.</returns>
+    private string? RestoreService(string service, ServiceSnapshot prior)
     {
         if (services is null || !prior.Present || prior.StartType is not { } startType)
         {
-            return;
+            return null;
         }
 
         services.SetStartType(service, startType, prior.DelayedAutostart);
 
-        if (prior.RunState == ServiceRunState.Running)
+        // The start result is REPORTED, not discarded. It used to be `out _`, which made this the one
+        // undo path in the engine that could leave a service configured correctly and stopped while
+        // saying nothing — the same shape as the residue that RollBackEntry was already fixed to
+        // surface, and as the failed-throttle report immediately above in UndoApplied. The
+        // journal-driven revert (RevertServiceStep) has always reported it; only this path, the one
+        // that runs mid-apply when an entry is being unwound, stayed quiet.
+        if (prior.RunState == ServiceRunState.Running
+            && !services.TryStart(service, TimeSpan.FromSeconds(30), out var diagnosis))
         {
-            services.TryStart(service, TimeSpan.FromSeconds(30), out _);
+            return $"{service} was put back to {startType} but did not restart ({diagnosis}); " +
+                   "it may start on demand, and a reboot will start it";
         }
+
+        return null;
     }
 
     /// <summary>Entry-level atomicity: unwind every applied step of the failing entry, newest first.</summary>

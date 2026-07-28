@@ -108,9 +108,26 @@ public sealed class FakeServiceControl : IServiceControl
         return true;
     }
 
+    /// <summary>
+    /// Services whose start request fails, modelling a service that will not come back up.
+    /// </summary>
+    /// <remarks>
+    /// Arrangeable because a restore that puts the configuration back and then fails to start the
+    /// service is the case where an undo has to admit it left something behind. It is also close to
+    /// impossible to stage against the real SCM on demand.
+    /// </remarks>
+    public HashSet<string> RefuseStart { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public bool TryStart(string service, TimeSpan timeout, out string diagnosis)
     {
         Log.Add($"start {service}");
+
+        if (RefuseStart.Contains(service))
+        {
+            diagnosis = "the service failed to reach the running state within the timeout";
+            return false;
+        }
+
         _entries[service].RunState = ServiceRunState.Running;
         diagnosis = string.Empty;
         return true;

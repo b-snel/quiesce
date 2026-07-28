@@ -149,6 +149,58 @@ public class ServiceEngineTests : IDisposable
         Assert.DoesNotContain(_services.Log, l => l.StartsWith("config Stubborn"));
     }
 
+    /// <summary>
+    /// An entry rollback that puts a service's configuration back but cannot restart it says so.
+    /// </summary>
+    /// <remarks>
+    /// This path used to discard the start result — <c>TryStart(..., out _)</c> — which made it the one undo
+    /// in the engine that could leave a service configured correctly and stopped while reporting a clean
+    /// unwind. The journal-driven revert has always reported it; only the mid-apply rollback stayed quiet.
+    /// Same shape as the residue this record was already fixed to carry for registry steps.
+    /// </remarks>
+    [Fact]
+    public void A_rollback_that_cannot_restart_a_service_reports_it()
+    {
+        _services.Add("Good", e =>
+        {
+            e.StartType = ServiceStartType.Automatic;
+            e.RunState = ServiceRunState.Running;
+        });
+        _services.Add("Stubborn", e =>
+        {
+            e.RunState = ServiceRunState.Running;
+            e.RefuseStop = true;
+        });
+
+        // Configured correctly on the way back, but refuses to come up again.
+        _services.RefuseStart.Add("Good");
+
+        var entry = ServiceEntry("Good", id: "svc.two-ops") with
+        {
+            Ops =
+            [
+                new ServiceOpSpec { Service = "Good", StartMode = ServiceStartMode.Manual, StopNow = true },
+                new ServiceOpSpec { Service = "Stubborn", StartMode = ServiceStartMode.Manual, StopNow = true },
+            ],
+        };
+
+        var result = Engage(entry);
+
+        Assert.Contains("svc.two-ops", result.RolledBackEntries);
+
+        // The configuration really did go back, which is exactly why the silence mattered: everything
+        // observable about the entry looked correct except that the service was not running.
+        Assert.Equal(ServiceStartType.Automatic, _services["Good"].StartType);
+        Assert.Equal(ServiceRunState.Stopped, _services["Good"].RunState);
+
+        var records = JournalReader.Read(
+            Path.Combine(new QuiescePaths(_dataRoot).SessionDir(result.SessionId), "journal.jsonl")).Records;
+
+        var rolledBack = records.OfType<EntryRolledBackRecord>().Single();
+        Assert.Contains("did not restart", rolledBack.Reason);
+        Assert.Contains("Good", rolledBack.Reason);
+    }
+
     // ----------------------------------------------------------- guardrails
 
     [Fact]

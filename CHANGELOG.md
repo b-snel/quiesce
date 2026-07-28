@@ -196,6 +196,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- **M6** — **An entry rollback that could not restart a service said nothing about it.** `RestoreService`
+  called `TryStart(..., out _)` and returned `void`, so the mid-apply rollback path was the one undo in the
+  engine that could put a service's configuration back, fail to start it, and still report a clean unwind —
+  leaving the machine with a service configured Automatic and sitting Stopped, with no record. The
+  journal-driven revert (`RevertServiceStep`) has always reported this; only the rollback stayed quiet. It
+  now returns residue like every other undo, and `EntryRolledBackRecord.Reason` carries it. Same shape as
+  the registry residue this record was already fixed to surface in M5.
 - **M6** — **Adding a running app created a new entry every time it was pressed.** Throttling
   ApplePhotoStreams four times produced four entries — the base id plus `-2`, `-3`, `-4` — all doing the
   same thing to the same folder, showing up in Features as four identical rows. Two causes, both fixed. The
