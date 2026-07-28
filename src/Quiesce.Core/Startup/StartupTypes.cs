@@ -44,7 +44,17 @@ public sealed record StartupItem
     /// <summary>The value name, or the shortcut file name including <c>.lnk</c>.</summary>
     public required string Name { get; init; }
 
-    /// <summary>The command line, or the shortcut's target. Empty when it could not be read.</summary>
+    /// <summary>
+    /// The registry command line, or — for a Startup-folder entry — the full path of the <c>.lnk</c> ITSELF.
+    /// </summary>
+    /// <remarks>
+    /// NOT the shortcut's target, which this said for three milestones and was the source of every wrong
+    /// assumption about this type. <c>Win32StartupInventory</c> sets <c>Command = file</c> for both Startup
+    /// folders and declines to resolve the target, because the approval value is keyed on the FILE NAME and so
+    /// the file name is the identity — see its remark. Resolving a target is a separate job for a separate
+    /// reason (joining an entry to a running application) and lives in
+    /// <see cref="Platform.IShortcutReader"/>.
+    /// </remarks>
     public required string Command { get; init; }
 
     public required StartupLocation Location { get; init; }
