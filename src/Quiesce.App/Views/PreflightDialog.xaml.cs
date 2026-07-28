@@ -52,9 +52,13 @@ public partial class PreflightDialog
             Summary.Text += $"  ·  {needsReboot.Count} needs a restart";
         }
 
-        ReversibilityNote.Text = plan.RequiresElevation
-            ? "Every change is written to Quiesce's journal before it is made, so Restore puts it all back — including after a crash."
-            : "These are per-user changes. Every one is journaled before it is made and fully reversible.";
+        if (CloseSummary(steps) is { Length: > 0 } closing)
+        {
+            CloseHeadline.Text = closing;
+            CloseWarning.Visibility = Visibility.Visible;
+        }
+
+        ReversibilityNote.Text = ReversibilityText(plan);
 
         if (restorePoint is not null)
         {
@@ -67,6 +71,70 @@ public partial class PreflightDialog
 
     /// <summary>True when the user approved. Read after <c>ShowDialog</c>.</summary>
     public bool Approved { get; private set; }
+
+    /// <summary>
+    /// Names every application this plan will ask to close, or the empty string when it closes none.
+    /// </summary>
+    /// <remarks>
+    /// Grouped by image name, not listed per step. A close journals one step per process instance —
+    /// deliberately, so each one carries its own recycling-proof identity — which means the measured
+    /// Comet on this machine is nineteen steps. Nineteen rows each ending "Restore will NOT reopen it"
+    /// is not nineteen times the warning; it is the warning turned into wallpaper. The per-row sentence
+    /// stays, because it is the truth about that row. This is the sentence that has to be read.
+    /// <para>
+    /// Ordered by first appearance rather than sorted, so the order matches the list below it.
+    /// </para>
+    /// </remarks>
+    internal static string CloseSummary(IReadOnlyList<PlannedStep> steps)
+    {
+        ArgumentNullException.ThrowIfNull(steps);
+
+        var names = steps
+            .Where(s => s.ProcessAction == Core.Catalog.ProcessAction.Close && s.ProcessBefore is not null)
+            .Select(s => s.ProcessBefore!.ImageName + ".exe")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return names.Count switch
+        {
+            0 => string.Empty,
+            1 => $"1 application will be asked to close: {names[0]}.",
+            _ => $"{names.Count} applications will be asked to close: {string.Join(", ", names)}.",
+        };
+    }
+
+    /// <summary>
+    /// What this dialog is allowed to promise about putting things back.
+    /// </summary>
+    /// <remarks>
+    /// THREE cases, and it used to have two. The elevation branch was standing in for "is this a
+    /// serious change", so a plan whose effective steps were only closes fell through to
+    /// "fully reversible" — because <see cref="EngagePlan.RequiresElevation"/> is
+    /// <c>EffectiveSteps.Any(s =&gt; s.Op.NeedsAdmin)</c> and a process op's <c>NeedsAdmin</c> is
+    /// <c>false</c>, correctly: closing a window in your own session needs no privilege. Reachable on
+    /// any machine whose registry entries are already lean, which is every machine that has engaged
+    /// once and restored. Closing is the one thing in this product with no undo, and the footer was
+    /// calling it fully reversible at the exact moment the user was deciding whether to allow it.
+    /// <para>
+    /// The close clause is checked FIRST, and it wins over the elevation clause rather than being
+    /// appended to it: a plan that closes something is a plan with an irreversible part regardless of
+    /// what else it does, and the note has room for one sentence.
+    /// </para>
+    /// </remarks>
+    internal static string ReversibilityText(EngagePlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+
+        if (plan.EffectiveSteps.Any(s => s.ProcessAction == Core.Catalog.ProcessAction.Close))
+        {
+            return "Everything here is journaled before it is made, so Restore puts it back — " +
+                   "everything except the closes. Nothing reopens a closed application, including Quiesce.";
+        }
+
+        return plan.RequiresElevation
+            ? "Every change is written to Quiesce's journal before it is made, so Restore puts it all back — including after a crash."
+            : "These are per-user changes. Every one is journaled before it is made and fully reversible.";
+    }
 
     private void OnApply(object sender, RoutedEventArgs e)
     {

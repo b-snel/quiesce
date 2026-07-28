@@ -235,23 +235,109 @@ public class ViewConstructionTests
         Assert.Contains("put back on Restore", rows[1].NewText);
     }
 
-    private static Core.Engine.PlannedStep ProcessStep(Core.Catalog.ProcessAction action) => new()
+    [Fact]
+    public void The_reversibility_note_does_not_call_a_close_reversible()
     {
-        StepId = 1,
+        // The live bug: RequiresElevation was standing in for "is this serious", and a process op's
+        // NeedsAdmin is correctly false - closing a window in your own session needs no privilege. So a
+        // plan whose effective steps were only closes fell through to "fully reversible", in the footer
+        // of the dialog where the user decides whether to allow the one thing with no undo. Reachable on
+        // any machine whose registry entries are already lean, which is every machine that has engaged
+        // once and restored.
+        var closesOnly = PlanOf(ProcessStep(Core.Catalog.ProcessAction.Close));
+
+        var note = PreflightDialog.ReversibilityText(closesOnly);
+
+        Assert.DoesNotContain("fully reversible", note, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("except the closes", note);
+
+        // A throttle IS put back, so a plan with no close keeps the old promise.
+        var throttleOnly = PlanOf(ProcessStep(Core.Catalog.ProcessAction.Throttle));
+
+        Assert.Contains("fully reversible", PreflightDialog.ReversibilityText(throttleOnly));
+    }
+
+    [Fact]
+    public void Preflight_names_every_application_it_will_close_and_shouts_save_your_work()
+    {
+        var plan = PlanOf(
+            ProcessStep(Core.Catalog.ProcessAction.Close, pid: 1, imageName: "comet"),
+            ProcessStep(Core.Catalog.ProcessAction.Close, pid: 2, imageName: "Discord"));
+
+        var summary = PreflightDialog.CloseSummary([.. plan.EffectiveSteps]);
+
+        Assert.Equal("2 applications will be asked to close: comet.exe, Discord.exe.", summary);
+    }
+
+    [Fact]
+    public void A_browser_with_nineteen_processes_is_named_once()
+    {
+        // The measured shape on this machine: Comet ran nineteen processes, and a close journals one
+        // step per instance. The per-row "Restore will NOT reopen it" is right nineteen times over and
+        // useless as a warning at that repetition, which is why this sentence exists.
+        var plan = PlanOf([.. Enumerable.Range(1, 19)
+            .Select(pid => ProcessStep(Core.Catalog.ProcessAction.Close, pid, "comet"))]);
+
+        var summary = PreflightDialog.CloseSummary([.. plan.EffectiveSteps]);
+
+        Assert.Equal("1 application will be asked to close: comet.exe.", summary);
+    }
+
+    [Fact]
+    public void A_plan_that_closes_nothing_gets_no_close_warning_at_all()
+    {
+        // Empty rather than a reassuring sentence: the banner is Collapsed, so there is nothing to say.
+        var plan = PlanOf(ProcessStep(Core.Catalog.ProcessAction.Throttle));
+
+        Assert.Equal(string.Empty, PreflightDialog.CloseSummary([.. plan.EffectiveSteps]));
+    }
+
+    [Fact]
+    public void The_close_warning_is_shown_only_when_something_will_close()
+    {
+        // CloseSummary is asserted directly elsewhere; this asserts the wiring, because a correct
+        // sentence in a Collapsed border is the same as no sentence at all.
+        var (closing, throttling) = OnStaThread(() =>
+        {
+            var withClose = new PreflightDialog(
+                PlanOf(ProcessStep(Core.Catalog.ProcessAction.Close, pid: 1, imageName: "comet")), null);
+            var withoutClose = new PreflightDialog(
+                PlanOf(ProcessStep(Core.Catalog.ProcessAction.Throttle)), null);
+
+            return ((withClose.CloseWarning.Visibility, withClose.CloseHeadline.Text),
+                    withoutClose.CloseWarning.Visibility);
+        });
+
+        Assert.Equal(System.Windows.Visibility.Visible, closing.Item1);
+        Assert.Contains("comet.exe", closing.Item2);
+        Assert.Equal(System.Windows.Visibility.Collapsed, throttling);
+    }
+
+    private static Core.Engine.EngagePlan PlanOf(params Core.Engine.PlannedStep[] steps) => new()
+    {
+        Profile = "default",
+        CatalogVersion = "test",
+        Steps = steps,
+    };
+
+    private static Core.Engine.PlannedStep ProcessStep(
+        Core.Catalog.ProcessAction action, int pid = 1, string imageName = "chrome") => new()
+    {
+        StepId = pid,
         EntryId = "apps.test",
         Scope = Core.Catalog.TweakScope.Session,
         Op = new Core.Catalog.ProcessOpSpec
         {
             Action = action,
-            ImageName = "chrome",
+            ImageName = imageName,
             UnderDirectories = [@"\Google\Chrome\Application\"],
             ThrottleTo = action == Core.Catalog.ProcessAction.Throttle ? Core.Catalog.ThrottleLevel.Idle : null,
         },
-        Target = "close chrome — chrome (pid 1)",
+        Target = $"close {imageName} — {imageName} (pid {pid})",
         ProcessBefore = new Core.Platform.ProcessSnapshot
         {
-            Identity = new Core.Platform.ProcessIdentity { Pid = 1, CreatedUtcTicks = 1 },
-            ImageName = "chrome",
+            Identity = new Core.Platform.ProcessIdentity { Pid = pid, CreatedUtcTicks = pid },
+            ImageName = imageName,
             ImagePath = @"C:\Program Files\Google\Chrome\Application\chrome.exe",
             SessionId = 1,
             PriorityClass = System.Diagnostics.ProcessPriorityClass.Normal,

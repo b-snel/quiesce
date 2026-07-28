@@ -24,6 +24,30 @@
             <TextBlock x:Name="Summary" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" />
             <TextBlock Margin="0,6,0,0" Opacity="0.7" TextWrapping="Wrap"
                        Text="This is the exact list Quiesce will write, read live from your machine a moment ago. Each line shows what is there now and what it will become. Nothing has changed yet." />
+            <!-- Above the restore-point banner and above the list, because it is the one thing on this
+                 dialog that cannot be undone by anything Quiesce or Windows offers afterwards. The list
+                 already says "asked to close - Restore will NOT reopen it" per row, which is right at
+                 the point of detail and useless as a warning: a browser running nineteen processes is
+                 nineteen rows, so the sentence that matters most was also the sentence repeated until
+                 it read as boilerplate. Amber, the same as the reboot banner, because both are
+                 warnings - drift has its own colour and does not borrow this one. -->
+            <Border x:Name="CloseWarning" CornerRadius="6" Padding="16,12" Margin="0,12,0,0"
+                    Background="#33D29922" Visibility="Collapsed">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="&#x26A0;" FontSize="20" Opacity="0.85"
+                               Margin="0,0,12,0" VerticalAlignment="Top" />
+                    <StackPanel Grid.Column="1">
+                        <TextBlock x:Name="CloseHeadline" FontWeight="SemiBold" FontSize="14"
+                                   TextWrapping="Wrap" />
+                        <TextBlock Margin="0,4,0,0" Opacity="0.85" FontSize="12.5" TextWrapping="Wrap"
+                                   Text="SAVE YOUR WORK FIRST. Each one gets exactly the prompt its X button gives, and Quiesce leaves a save-your-work prompt alone — but Restore will NOT reopen any of them." />
+                    </StackPanel>
+                </Grid>
+            </Border>
             <Border x:Name="RestorePointBanner" CornerRadius="6" Padding="12,8" Margin="0,12,0,0"
                     Background="#22FFFFFF" Visibility="Collapsed">
                 <TextBlock x:Name="RestorePointText" TextWrapping="Wrap" FontSize="12" />
