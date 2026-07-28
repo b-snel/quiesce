@@ -183,10 +183,39 @@ $skipped  = if ($elevated) { @() } else { $catalog.entries | Where-Object { $_.r
 
 # -Only / -Skip narrow the run for staging. Applied after the elevation filter so the SKIPPED
 # report still means "needs elevation" and never silently absorbs a deliberate exclusion.
+#
+# Split on comma and semicolon INSIDE each element. `powershell -File script.ps1 -Skip a,b` invoked
+# from cmd.exe does not build an array - -File takes the remaining arguments as literal strings, so
+# the parameter binds as the single element "a,b", which matches no entry id and silently filters
+# nothing. That is exactly how a run intended to cover 23 entries quietly covered 33 and stopped
+# nine services nobody meant to touch. Normalizing here makes the two invocation styles agree.
+$normalize = {
+    param($values)
+    @($values | ForEach-Object { $_ -split '[,;]' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+$Only = & $normalize $Only
+$Skip = & $normalize $Skip
+
 $matchesPrefix = { param($id, $prefixes) foreach ($p in $prefixes) { if ($id.StartsWith($p, 'OrdinalIgnoreCase')) { return $true } } return $false }
+$beforeFilter = @($testable).Count
 if ($Only.Count -gt 0) { $testable = @($testable | Where-Object { & $matchesPrefix $_.id $Only }) }
+$afterOnly = @($testable).Count
 if ($Skip.Count -gt 0) { $testable = @($testable | Where-Object { -not (& $matchesPrefix $_.id $Skip) }) }
-if (@($testable).Count -eq 0) { throw "No entries selected. -Only $($Only -join ',') / -Skip $($Skip -join ',') matched nothing." }
+$afterSkip = @($testable).Count
+if ($afterSkip -eq 0) { throw "No entries selected. -Only $($Only -join ',') / -Skip $($Skip -join ',') matched nothing." }
+
+# A prefix that matches nothing in the WHOLE catalog is a typo or a quoting problem, and the cost of
+# not noticing is running the tweaks you meant to exclude. Validate against the full catalog rather
+# than against what survived the elevation filter: unelevated, "-Skip svc." legitimately removes
+# nothing because those entries are already out, and that is not an error.
+foreach ($p in @($Only) + @($Skip)) {
+    if (-not (@($catalog.entries) | Where-Object { & $matchesPrefix $_.id @($p) })) {
+        throw "'$p' matches no entry id in the catalog, so it would filter nothing. Check the spelling, and quote the value if you are calling powershell -File from cmd.exe."
+    }
+}
+if ($Skip.Count -gt 0 -and $afterSkip -eq $afterOnly) {
+    Write-Host "note: -Skip $($Skip -join ', ') removed nothing here - those entries were already excluded." -ForegroundColor Yellow
+}
 
 # Drive the run through a scratch data root so the real machine state is untouched, and enable
 # exactly the entries under test.
@@ -205,6 +234,10 @@ Write-Host "quiesce  : $Quiesce"
 Write-Host "catalog  : $catalogPath (v$($catalog.catalogVersion), $($catalog.entries.Count) entries)"
 Write-Host "elevated : $elevated"
 Write-Host "testing  : $($testable.Count) entr$(if ($testable.Count -eq 1) {'y'} else {'ies'})"
+# Echo the filters AS PARSED, not as typed. The failure mode being guarded against is a filter that
+# looks right on the command line and arrives as one unusable string.
+if ($Only.Count -gt 0) { Write-Host "only     : $($Only -join ' | ')" }
+if ($Skip.Count -gt 0) { Write-Host "excluded : $($Skip -join ' | ')  ($($afterOnly - $afterSkip) entr$(if (($afterOnly - $afterSkip) -eq 1) {'y'} else {'ies'}) removed)" }
 Write-Host "data root: $scratchRoot"
 if ($skipped.Count -gt 0) {
     Write-Host "SKIPPED (need elevation - re-run this script as Administrator to cover them):" -ForegroundColor Yellow
