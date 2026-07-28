@@ -283,6 +283,46 @@ if ($serviceNames.Count -gt 0) {
 }
 Write-Host ""
 
+# Refuse to take a baseline while any earlier session is still outstanding. Catching this after
+# round 1 is too late to be useful - by then the baseline is already the engaged state, and every
+# subsequent comparison is against the wrong reference. Cheaper and clearer to look first.
+#
+# A session is outstanding when it has 'applied' records but no 'revertComplete'. Do NOT compare
+# applied and reverted COUNTS: a step that is applied and then rolled back within its entry leaves
+# an 'applied' record with no matching 'reverted' - it is accounted for by 'entryRolledBack' - so
+# counting made two already-clean sessions look dirty. A preflight that cries wolf gets ignored,
+# which is worse than not having one.
+#
+# Scans this script's own scratch roots and the real ProgramData root, since a leftover GUI or CLI
+# session poisons the baseline exactly the same way.
+$outstanding = @()
+$roots = @(Get-ChildItem "$env:TEMP\quiesce-baseline-*" -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+$roots += (Join-Path $env:ProgramData 'Quiesce')
+foreach ($root in ($roots | Where-Object { $_ -ne $scratchRoot })) {
+    foreach ($j in @(Get-ChildItem (Join-Path $root 'journal') -Recurse -Filter journal.jsonl -ErrorAction SilentlyContinue)) {
+        $lines = @(Get-Content $j.FullName -ErrorAction SilentlyContinue)
+        $applied = @($lines | Where-Object { $_ -match '"record":"applied"' }).Count
+        $done    = @($lines | Where-Object { $_ -match '"record":"revertComplete"' }).Count
+        if ($applied -gt 0 -and $done -eq 0) {
+            $outstanding += [pscustomobject]@{
+                Root = $root; Session = $j.Directory.Name; Applied = $applied
+                Committed = @($lines | Where-Object { $_ -match '"record":"committed"' }).Count -gt 0
+            }
+        }
+    }
+}
+if ($outstanding.Count -gt 0) {
+    Write-Host "REFUSING TO RUN - $($outstanding.Count) session(s) still have changes on this machine." -ForegroundColor Red
+    Write-Host "Baselining now would capture the ENGAGED state as 'clean' and every round would pass" -ForegroundColor Red
+    Write-Host "while testing nothing. Revert these first, newest last-applied first:" -ForegroundColor Red
+    foreach ($o in $outstanding) {
+        Write-Host "  $($o.Session)  applied=$($o.Applied) reverted=$($o.Reverted)" -ForegroundColor Red
+        Write-Host "    `$env:QUIESCE_DATA_ROOT='$($o.Root)'; & `"$Quiesce`" revert-all" -ForegroundColor Yellow
+    }
+    Remove-Item $scratchRoot -Recurse -Force -ErrorAction SilentlyContinue
+    exit 1
+}
+
 $baseline = Get-Snapshot -Subtrees $subtrees -Services $serviceNames
 $baselineMouse = Get-MouseCurve
 $baselineSvc = Get-ServiceFacts -Names $serviceNames
@@ -309,8 +349,18 @@ for ($round = 1; $round -le $Rounds; $round++) {
     $changed = (Compare-Object $baseline $engaged).Count
     Write-Host "  engaged: $changed value(s) differ from baseline, mouse curve [$(Get-MouseCurve)]"
 
+    # An engage that changes nothing voids the whole run. The baseline was then captured from an
+    # ALREADY-ENGAGED machine, so "restore returned it to baseline" is comparing the applied state
+    # against itself - byte-identical, trivially, five rounds running, while nothing was tested and
+    # the machine stayed dirty. This was a warning once; it printed five times under a green PASS.
+    # A check whose failure mode is a pass is not a check.
     if ($changed -eq 0) {
-        Write-Host "  WARNING: engage changed nothing - the catalog may already be applied" -ForegroundColor Yellow
+        Write-Host "  ENGAGE WAS A NO-OP - the machine is already engaged, so this run proves nothing." -ForegroundColor Red
+        Write-Host "  Revert the outstanding session(s) first, then re-run. Look for journals under:" -ForegroundColor Red
+        Write-Host "    $env:TEMP\quiesce-baseline-*\journal\*\journal.jsonl" -ForegroundColor Red
+        Write-Host "  A journal with more 'applied' than 'reverted' records is still outstanding." -ForegroundColor Red
+        $failures++
+        break
     }
 
     # A refused service is reported by quiesce and then vanishes into an aggregate count: 24

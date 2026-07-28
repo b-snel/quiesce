@@ -178,7 +178,15 @@ public class EngineRecoveryTests : IDisposable
         _h.Registry.Seed(target, EngineTestHarness.Dword(1));
 
         // Simulate by engaging with a registry that dies on first write.
-        var dying = new SabotagedRegistry(_h.Registry, throwOnSet: true);
+        //
+        // The sabotage must throw something the engine treats as a genuine CRASH, not as a refused
+        // write. IOException and UnauthorizedAccessException are both handled outcomes now: the
+        // entry rolls back and Engage returns normally, which is correct behaviour but does not
+        // leave the dirty state this test needs. Using one of those made the test pass for the
+        // wrong reason - it was pinning an escaping exception thrown by the ROLLBACK re-writing a
+        // prior that had never changed, which is the bug RestorePrior's already-restored check
+        // removed. See Refused_write_no_longer_escapes_engage below for the handled path.
+        var dying = new SabotagedRegistry(_h.Registry, crashOnSet: true);
         var engine = new TransactionEngine(dying, _h.Broadcaster, _h.Paths, new EngineInfo
         {
             AppVersion = "0.0.0-test",
@@ -186,7 +194,7 @@ public class EngineRecoveryTests : IDisposable
             UserSid = EngineTestHarness.Sid,
         });
 
-        Assert.ThrowsAny<IOException>(() =>
+        Assert.ThrowsAny<InvalidProgramException>(() =>
             engine.Engage(_h.Engine.Plan(EngineTestHarness.CatalogOf(entry), "test"), FaultInjector.None));
 
         Assert.True(_h.State.IsDirty);
@@ -199,8 +207,42 @@ public class EngineRecoveryTests : IDisposable
         Assert.Equal(1u, _h.Registry.Peek(target)!.Data.GetUInt32()); // untouched
     }
 
+    [Fact]
+    public void Refused_write_no_longer_escapes_engage()
+    {
+        // Before RestorePrior checked the end state first, a refused write took this path: apply
+        // throws, the entry rolls back, the rollback re-writes a prior that had never changed, the
+        // same registry refuses THAT too, and the exception escapes Engage - crashing the caller
+        // mid-apply, which is exactly what the typed write-failure diagnosis was introduced to stop.
+        // The forward write was guarded; the rollback was not.
+        var entry = EngineTestHarness.DwordEntry();
+        var target = EngineTestHarness.TargetOf(entry);
+        _h.Registry.Seed(target, EngineTestHarness.Dword(1));
+
+        var refusing = new SabotagedRegistry(_h.Registry, throwOnSet: true);
+        var engine = new TransactionEngine(refusing, _h.Broadcaster, _h.Paths, new EngineInfo
+        {
+            AppVersion = "0.0.0-test",
+            OsBuild = "10.0.26200",
+            UserSid = EngineTestHarness.Sid,
+        });
+
+        var engage = engine.Engage(_h.Engine.Plan(EngineTestHarness.CatalogOf(entry), "test"), FaultInjector.None);
+
+        Assert.Contains(entry.Id, engage.RolledBackEntries);
+        Assert.Equal(1u, _h.Registry.Peek(target)!.Data.GetUInt32()); // untouched
+
+        // Not asserting on IsDirty: a session that rolled every entry back still holds the flag
+        // until it is reverted. That is conservative rather than wrong, and it is not what this
+        // test is about - the point is that Engage RETURNED instead of throwing.
+    }
+
     /// <summary>Wraps the fake to sabotage specific operations.</summary>
-    private sealed class SabotagedRegistry(FakeRegistry inner, string? failVerifyOn = null, bool throwOnSet = false)
+    private sealed class SabotagedRegistry(
+        FakeRegistry inner,
+        string? failVerifyOn = null,
+        bool throwOnSet = false,
+        bool crashOnSet = false)
         : Quiesce.Core.Platform.IRegistry
     {
         public Quiesce.Core.Platform.RegistryProbe Probe(Quiesce.Core.Platform.RegistryTarget target) =>
@@ -208,6 +250,12 @@ public class EngineRecoveryTests : IDisposable
 
         public string? SetValue(Quiesce.Core.Platform.RegistryTarget target, Quiesce.Core.Platform.RegistryData data)
         {
+            // Not in the engine's handled set, so it escapes Engage and models a real crash.
+            if (crashOnSet)
+            {
+                throw new InvalidProgramException("simulated process death mid-apply");
+            }
+
             if (throwOnSet)
             {
                 throw new IOException("simulated hardware/ACL failure on write");

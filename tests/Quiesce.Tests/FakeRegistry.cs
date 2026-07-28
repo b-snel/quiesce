@@ -79,8 +79,34 @@ public sealed class FakeRegistry : IRegistry
             : new RegistryProbe { Presence = RegPresence.ValueAbsent };
     }
 
+    /// <summary>
+    /// Value targets a kernel registry callback refuses to let anyone write OR delete, even with a
+    /// permissive DACL, an elevated caller, and an operation that would change nothing.
+    /// </summary>
+    /// <remarks>
+    /// Models real observed behaviour: on Windows 11,
+    /// <c>HKLM\SOFTWARE\Policies\Microsoft\Dsh!AllowNewsAndInterests</c> is vetoed on that exact
+    /// (key, value name) pair while the same key accepts every other name and the same name is
+    /// accepted in other keys. Crucially the veto covers the DELETE too, which is what turned a
+    /// failed apply into a session that could never be reverted.
+    /// </remarks>
+    public void VetoWritesTo(RegistryTarget target) => _vetoed.Add(VetoKey(target));
+
+    private readonly HashSet<string> _vetoed = new(StringComparer.OrdinalIgnoreCase);
+
+    private static string VetoKey(RegistryTarget t) => $"{t.Hive}|{t.UserSid}|{t.Subkey}|{t.ValueName}";
+
+    private void ThrowIfVetoed(RegistryTarget target)
+    {
+        if (_vetoed.Contains(VetoKey(target)))
+        {
+            throw new UnauthorizedAccessException("Attempted to perform an unauthorized operation.");
+        }
+    }
+
     public string? SetValue(RegistryTarget target, RegistryData data)
     {
+        ThrowIfVetoed(target);
         Log.Add($"set {target} = {data.Kind}");
         var missing = MissingPath(Root(target), FullPath(target));
         var key = GetOrCreate(Root(target), FullPath(target));
@@ -90,6 +116,7 @@ public sealed class FakeRegistry : IRegistry
 
     public void DeleteValue(RegistryTarget target)
     {
+        ThrowIfVetoed(target);
         Log.Add($"del {target}");
         Find(Root(target), FullPath(target))?.Values.Remove(target.ValueName);
     }

@@ -965,6 +965,27 @@ public sealed class TransactionEngine(
 
     private void RestorePrior(RegistryTarget target, RegistryProbe prior)
     {
+        // Check the end state BEFORE mutating. A restore whose outcome already holds must not issue
+        // the write or the delete anyway: the operation can be refused even when it would change
+        // nothing, and a refusal here fails the whole revert and leaves the session permanently
+        // unclosable.
+        //
+        // Found on a real machine, not in theory. A write to
+        // HKLM\SOFTWARE\Policies\Microsoft\Dsh!AllowNewsAndInterests is vetoed by a registry
+        // callback keyed on that exact (key, value name) pair, so the value was never created. The
+        // captured prior was ValueAbsent. Revert then tried to DELETE the value that was already
+        // absent, was vetoed in turn, and reported "machine still DIRTY" over a value that had
+        // never changed - a state no number of retries could clear, because the retry performs the
+        // same forbidden no-op.
+        //
+        // This is also what makes revert genuinely idempotent, which the delete path already
+        // claimed to be but only achieved when the delete was permitted.
+        var current = registry.Probe(target);
+        if (IsAlreadyRestored(current, prior))
+        {
+            return;
+        }
+
         switch (prior.Presence)
         {
             case RegPresence.ValuePresent:
@@ -977,7 +998,15 @@ public sealed class TransactionEngine(
                 break;
 
             case RegPresence.KeyAbsent:
-                registry.DeleteValue(target);
+                // Delete the value only if it is actually there. A KeyAbsent prior still needs the
+                // created-key cleanup below even when the value never landed, so this branch cannot
+                // short-circuit wholesale — but the delete itself must still be skipped, or a
+                // vetoed value name traps the revert here exactly as it did for a ValueAbsent prior.
+                if (current.Presence == RegPresence.ValuePresent)
+                {
+                    registry.DeleteValue(target);
+                }
+
                 if (prior.MissingKeyPath is { } created)
                 {
                     registry.DeleteCreatedKeysIfEmpty(target, created);
@@ -989,6 +1018,25 @@ public sealed class TransactionEngine(
                 throw new ArgumentOutOfRangeException(nameof(prior), prior.Presence, "Unknown presence.");
         }
     }
+
+    /// <summary>True when the live state already matches the captured prior, so restoring it is a no-op.</summary>
+    private static bool IsAlreadyRestored(RegistryProbe current, RegistryProbe prior) => prior.Presence switch
+    {
+        // Absent either way. Notably KeyAbsent also satisfies this: the value is not there, and
+        // recreating a whole key just to delete a value from it would be a strange way to restore.
+        RegPresence.ValueAbsent => current.Presence is RegPresence.ValueAbsent or RegPresence.KeyAbsent,
+
+        // Only short-circuit when the key is genuinely gone. A key that still exists may be one this
+        // session created and still owes a DeleteCreatedKeysIfEmpty pass.
+        RegPresence.KeyAbsent => current.Presence == RegPresence.KeyAbsent,
+
+        RegPresence.ValuePresent => current.Presence == RegPresence.ValuePresent
+            && current.Value is not null
+            && prior.Value is not null
+            && current.Value.DataEquals(prior.Value),
+
+        _ => false,
+    };
 
     private RegistryTarget ResolveTarget(RegistryOpSpec op) => op.Hive switch
     {
