@@ -6,10 +6,13 @@
     <RootNamespace>Quiesce.Tests</RootNamespace>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <!-- Needed to construct the WPF pages in ViewConstructionTests. -->
+    <UseWPF>true</UseWPF>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Quiesce.Core\Quiesce.Core.csproj" />
+    <ProjectReference Include="..\..\src\Quiesce.App\Quiesce.App.csproj" />
     <!-- ReferenceOutputAssembly=false: the CLI contract tests spawn quiesce.exe as a process
          rather than linking it, but the build order must still guarantee the exe exists. -->
     <ProjectReference Include="..\..\src\Quiesce.Cli\Quiesce.Cli.csproj" ReferenceOutputAssembly="false" />
@@ -24,6 +27,9 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <!-- UseWPF removes System.IO from the implicit usings (System.Windows.Shapes.Path collision);
+         the engine tests use it heavily, so bring it back globally. -->
+    <Using Include="System.IO" />
   </ItemGroup>
 
 </Project>

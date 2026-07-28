@@ -1,0 +1,55 @@
+<UserControl x:Class="Quiesce.App.Views.DashboardPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="24,16" MaxWidth="760" HorizontalAlignment="Left">
+
+            <!-- Machine state -->
+            <Border x:Name="StateBanner" CornerRadius="8" Padding="20,16" Margin="0,0,0,20">
+                <StackPanel>
+                    <TextBlock x:Name="StateHeadline" FontSize="26" FontWeight="SemiBold" />
+                    <TextBlock x:Name="StateDetail" Margin="0,6,0,0" Opacity="0.75" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
+            <!-- Engage / Restore. Present but disabled in M2: the GUI gets its mutation path in M3,
+                 through the same TransactionEngine the CLI already exercises. -->
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,28">
+                <ui:Button x:Name="EngageButton" x:FieldModifier="public"
+                           Content="Engage"
+                           Appearance="Primary"
+                           FontSize="16"
+                           Padding="28,10"
+                           IsEnabled="False"
+                           ToolTip="Arrives in M3. Until then: quiesce engage (elevated)." />
+                <ui:Button x:Name="RestoreButton" x:FieldModifier="public"
+                           Content="Restore"
+                           FontSize="16"
+                           Padding="28,10"
+                           Margin="12,0,0,0"
+                           IsEnabled="False"
+                           ToolTip="Arrives in M3. Until then: quiesce restore." />
+            </StackPanel>
+
+            <!-- The pitch: positive-first, numbers attached, nothing promised that wasn't measured. -->
+            <TextBlock FontSize="18" FontWeight="SemiBold" Text="Smoother frames, not bigger numbers." />
+            <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Opacity="0.85">
+                Quiesce removes the background work that causes stutter — timer-resolution abuse from
+                idle Electron apps, surprise maintenance and update bursts, search indexing, capture
+                buffers. In measured tests that lifts 1% lows substantially (48 → 72 fps in a
+                loaded Forza Horizon 5 run) while average FPS stays about the same, which is why
+                you won't find an FPS counter anywhere in this app.
+            </TextBlock>
+            <TextBlock Margin="0,8,0,24" TextWrapping="Wrap" Opacity="0.6">
+                Every change is journaled before it is made and individually reversible — including
+                after a crash or power loss. The undo is the product.
+            </TextBlock>
+
+            <!-- Environment facts -->
+            <TextBlock FontSize="14" FontWeight="SemiBold" Text="This machine" Margin="0,0,0,8" />
+            <TextBlock x:Name="EnvironmentDetail" TextWrapping="Wrap" Opacity="0.7" FontFamily="Consolas" />
+
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

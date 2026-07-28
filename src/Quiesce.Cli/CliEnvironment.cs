@@ -117,31 +117,7 @@ internal sealed class CliEnvironment
         return CommandRouter.ExitCode.UsageError;
     }
 
-    /// <summary>
-    /// Catalog resolution: env override, then next to the exe (installed layout), then walking up
-    /// from the exe looking for <c>catalog\tweaks.json</c> (dev layout, exe deep in bin\...).
-    /// Returns null rather than throwing — absence is legitimate for the revert verbs.
-    /// </summary>
-    private static string? TryLocateCatalog(string imagePath)
-    {
-        if (Environment.GetEnvironmentVariable(CatalogEnvVar) is { Length: > 0 } overridePath)
-        {
-            return File.Exists(overridePath) ? overridePath : null;
-        }
-
-        var dir = Path.GetDirectoryName(imagePath)!;
-
-        for (var probe = new DirectoryInfo(dir); probe is not null; probe = probe.Parent)
-        {
-            var candidate = Path.Combine(probe.FullName, "catalog", "tweaks.json");
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        return null;
-    }
+    private static string? TryLocateCatalog(string imagePath) => CatalogLocator.TryLocate(imagePath);
 
     private static string OsBuild()
     {

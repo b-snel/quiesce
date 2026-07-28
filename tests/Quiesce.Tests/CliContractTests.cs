@@ -212,12 +212,10 @@ public class CliContractTests : IDisposable
         static bool IsRunnable(string exe) =>
             File.Exists(exe) && File.Exists(Path.ChangeExtension(exe, ".dll"));
 
-        var sibling = Path.Combine(AppContext.BaseDirectory, "quiesce.exe");
-        if (IsRunnable(sibling))
-        {
-            return sibling;
-        }
-
+        // Deliberately skip AppContext.BaseDirectory: referencing Quiesce.App drops ITS elevated
+        // apphost into this directory, and on some SDK versions that overwrites quiesce.exe with a
+        // requireAdministrator manifest. Launching that raises "the requested operation requires
+        // elevation" instead of running the CLI. Always take the exe from the CLI's own bin.
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
         {
             if (!File.Exists(Path.Combine(dir.FullName, "global.json")))

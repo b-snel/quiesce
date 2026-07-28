@@ -1,0 +1,21 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Evidence badge palette, rendered on every Features row. The colors are part of the honesty
+         design: Measured is the only green, and both "no evidence" tiers are red.
+
+         Kept in its own dictionary rather than inline in App.xaml so tests can merge it without
+         instantiating the Application class - WPF permits only one Application per AppDomain, and
+         loading App.xaml as a dictionary constructs one. -->
+    <SolidColorBrush x:Key="EvidenceMeasuredBrush" Color="#FF3FB950" />
+    <SolidColorBrush x:Key="EvidenceSituationalBrush" Color="#FFD29922" />
+    <SolidColorBrush x:Key="EvidenceABBrush" Color="#FF58A6FF" />
+    <SolidColorBrush x:Key="EvidenceCosmeticBrush" Color="#FF8B949E" />
+    <SolidColorBrush x:Key="EvidenceNoEvidenceBrush" Color="#FFF85149" />
+    <SolidColorBrush x:Key="EvidenceNotRecommendedBrush" Color="#FFF85149" />
+
+    <!-- Selected-nav accent. Fixed logo blue rather than the system accent, which on some machines
+         is red and makes the selected item read as an error state. -->
+    <SolidColorBrush x:Key="QuiesceAccentBrush" Color="#FF3FA9FF" />
+
+</ResourceDictionary>

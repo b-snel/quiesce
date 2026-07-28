@@ -31,8 +31,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   someone else after apply is kept rather than clobbered, multi-op entries roll back whole, an unloaded user hive
   defers instead of silently claiming success, and revert works with the catalog deleted.
 
+- **M2** — The WPF shell: a `FluentWindow` with Mica backdrop and four pages — Dashboard (machine state, honest
+  framing, environment facts), Features (catalog rendered with evidence badge, impact, risk tier and what it
+  breaks), Services (the tier-0 never-touch list, shown locked *with the reason*), and What Quiesce won't do.
+  Read-only: Engage and Restore are present but disabled until the M3 wiring.
+- **M2** — Single-instance guard on a `Global\` mutex, so a second window cannot race the first.
+- **M2** — `run-app.ps1`, which stages the build output to `%TEMP%` before launching. An elevated Quiesce locks
+  its own build output and cannot be closed from an unelevated shell; running from a copy avoids the deadlock.
+
 ### Fixed
 
+- **M2** — `InvariantGlobalization=true` (set during M0 as a size optimization) crashed WPF at startup with a
+  `CultureNotFoundException` from the font cache. Removed, with a comment so it does not come back.
+- **M2** — The selected navigation item rendered as a solid block of the *system* accent colour, which reads as
+  an error state on machines whose accent is red. Retemplated with a fixed logo-blue pill.
 - **M1** — `revert-all` refused to run when the catalog was missing, even though revert reads only the journal.
   The panic button must work with the catalog gone; the CLI now resolves the catalog lazily. Regression-tested.
 - **M1** — An early elevation gate refused *revert* without admin, which could strand a user with an engaged

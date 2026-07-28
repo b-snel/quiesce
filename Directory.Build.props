@@ -18,7 +18,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- InvariantGlobalization is deliberately NOT set: WPF's font cache initializes real
+         cultures and crashes at startup in invariant mode (CultureNotFoundException for 'en'). -->
     <AccelerateBuildsInVisualStudio>true</AccelerateBuildsInVisualStudio>
 
     <Authors>Brian Snelgrove</Authors>

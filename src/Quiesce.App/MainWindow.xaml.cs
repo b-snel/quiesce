@@ -1,23 +1,39 @@
-﻿using System.Text;
-using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
+using Quiesce.App.Views;
 
 namespace Quiesce.App;
 
-/// <summary>
-/// Interaction logic for MainWindow.xaml
-/// </summary>
-public partial class MainWindow : Window
+public partial class MainWindow
 {
+    private readonly Dictionary<string, UserControl> _pages;
+
     public MainWindow()
     {
         InitializeComponent();
+
+        var state = AppState.Load();
+
+        _pages = new Dictionary<string, UserControl>
+        {
+            ["Dashboard"] = new DashboardPage(state),
+            ["Features"] = new FeaturesPage(state),
+            ["Services"] = new ServicesPage(),
+            ["What Quiesce won't do"] = new WontDoPage(),
+        };
+
+        foreach (var name in _pages.Keys)
+        {
+            Nav.Items.Add(name);
+        }
+
+        Nav.SelectedIndex = 0;
+    }
+
+    private void OnNavSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (Nav.SelectedItem is string name && _pages.TryGetValue(name, out var page))
+        {
+            PageHost.Content = page;
+        }
     }
 }

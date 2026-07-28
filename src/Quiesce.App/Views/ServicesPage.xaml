@@ -1,0 +1,43 @@
+<UserControl x:Class="Quiesce.App.Views.ServicesPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             xmlns:views="clr-namespace:Quiesce.App.Views">
+    <Grid Margin="24,16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock FontSize="22" FontWeight="SemiBold" Text="Services" />
+            <TextBlock Margin="0,4,0,0" Opacity="0.7" TextWrapping="Wrap"
+                       Text="Service management arrives in M4. What you can already see is the guardrail: the services Quiesce refuses to touch, with the reason — visible and locked, not hidden. No tweak file can override this list; it is compiled in." />
+        </StackPanel>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <ItemsControl x:Name="LockedList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="{x:Type views:LockedServiceRow}">
+                        <ui:Card Margin="0,3" Padding="14,10">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="220" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <ui:SymbolIcon Grid.Column="0" Symbol="LockClosed24" Margin="0,0,12,0"
+                                               VerticalAlignment="Center" Opacity="0.6" />
+                                <TextBlock Grid.Column="1" Text="{Binding Name}" FontFamily="Consolas"
+                                           FontSize="13" VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="2" Text="{Binding Reason}" Opacity="0.65"
+                                           FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
+                            </Grid>
+                        </ui:Card>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </Grid>
+</UserControl>
