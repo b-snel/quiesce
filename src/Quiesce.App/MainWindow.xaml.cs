@@ -111,8 +111,22 @@ public partial class MainWindow
     /// The page that raised the change. Kept rather than rebuilt: it re-renders itself, and discarding it
     /// mid-callback would tear down the control still inside its own event handler.
     /// </param>
-    private void InvalidatePages(string keep)
+    internal void InvalidatePages(string keep)
     {
+        // Refused outright while a mutation is in flight. This method's whole job is to throw pages away
+        // and rebuild them, and a mutation is driven by an `async void` handler that lives ON one of
+        // those pages - suspended at ShowDialog, or awaiting the engine. Evicting it mid-flight leaves an
+        // orphaned handler that still finishes the job, still closes what it was going to close, and
+        // reports into a banner detached from the visual tree, while the page that replaced it renders
+        // the state as it was before any of that happened.
+        //
+        // Nothing is lost by refusing: every mutating path calls Refresh() on itself when it completes,
+        // and that raises the event that brings us back here.
+        if (App.Mutating)
+        {
+            return;
+        }
+
         _state = AppState.Load();
         RenderRebootBanner();
 

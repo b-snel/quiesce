@@ -9,14 +9,6 @@ namespace Quiesce.Cli;
 /// <summary>Implementations of the M1 verbs. Thin: parse options, call the engine, print, exit-code.</summary>
 internal static class Verbs
 {
-    /// <summary>Serializes the single-writer verbs across processes and sessions.</summary>
-    /// <remarks>
-    /// <c>Global\</c>, not <c>Local\</c>: the boot-recovery task lives in session 0, and a
-    /// session-local mutex would be invisible to it — exactly the race that lets a recovery revert
-    /// interleave with an interactive apply.
-    /// </remarks>
-    private const string MutexName = @"Global\Quiesce.Mutating";
-
     // ------------------------------------------------------------ read-only
 
     /// <summary>
@@ -580,37 +572,27 @@ internal static class Verbs
         return CommandRouter.ExitCode.NotElevated;
     }
 
+    /// <summary>
+    /// Runs a mutating verb under the cross-process lock, or refuses.
+    /// </summary>
+    /// <remarks>
+    /// The lock itself moved to <see cref="MutatingLock"/> so the GUI can take the same one. It held
+    /// nothing before, which meant this refusal only ever protected the CLI from another CLI.
+    /// <para>
+    /// The sentinel is <see cref="CommandRouter.ExitCode.UsageError"/>, unchanged, and the message still
+    /// goes to stderr — but only when the lock was actually contended, so a caller cannot mistake the
+    /// busy exit for a genuine usage mistake without the line that says which.
+    /// </para>
+    /// </remarks>
     private static int WithMutex(Func<int> body)
     {
-        using var mutex = new Mutex(initiallyOwned: false, MutexName);
-
-        var acquired = false;
-        try
+        if (MutatingLock.TryRun(body, out var code))
         {
-            try
-            {
-                acquired = mutex.WaitOne(TimeSpan.Zero);
-            }
-            catch (AbandonedMutexException)
-            {
-                acquired = true; // previous holder died; the journal lock is the real guard
-            }
-
-            if (!acquired)
-            {
-                Console.Error.WriteLine("quiesce: another Quiesce process is mutating the machine. Refusing to run concurrently.");
-                return CommandRouter.ExitCode.UsageError;
-            }
-
-            return body();
+            return code;
         }
-        finally
-        {
-            if (acquired)
-            {
-                mutex.ReleaseMutex();
-            }
-        }
+
+        Console.Error.WriteLine("quiesce: " + MutatingLock.BusyMessage);
+        return CommandRouter.ExitCode.UsageError;
     }
 
     private static int PrintRevert(RevertResult result)

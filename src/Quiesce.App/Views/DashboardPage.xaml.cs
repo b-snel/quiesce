@@ -207,6 +207,11 @@ public partial class DashboardPage
 
             var restorePoint = await Task.Run(() => new SystemRestore().TryCreate("Before Quiesce engage"));
 
+            // Set BEFORE the dialog, not before the engine call. ShowDialog spins a nested dispatcher
+            // loop, so everything that can reach a click handler still can while it is open - and a WPF
+            // modal disables only its owner window, which the tray is not part of. See App.Mutating.
+            App.Mutating = true;
+
             var dialog = new PreflightDialog(plan, restorePoint) { Owner = Window.GetWindow(this) };
             if (dialog.ShowDialog() != true)
             {
@@ -214,7 +219,24 @@ public partial class DashboardPage
                 return;
             }
 
-            var result = await Task.Run(() => engine.Engage(plan, FaultInjector.None));
+            // The lock is taken and released INSIDE the Task.Run body. A Mutex is owned by the thread
+            // that acquired it and ReleaseMutex throws from any other, so wrapping the await instead
+            // would release on whatever thread the continuation resumed on - the UI thread, for an
+            // `async void` handler.
+            //
+            // Null means the lock was held and NOTHING ran, which is a different outcome from every
+            // other path through this method: there is no session, no journal, and nothing to report
+            // about the machine except that Quiesce declined to touch it.
+            var result = await Task.Run(() =>
+                MutatingLock.TryRun(() => engine.Engage(plan, FaultInjector.None), out var engaged)
+                    ? engaged
+                    : null);
+
+            if (result is null)
+            {
+                ShowResult(ResultTone.Bad, MutatingLock.BusyMessage);
+                return;
+            }
 
             ResultTone tone;
             string message;
@@ -259,6 +281,9 @@ public partial class DashboardPage
         }
         finally
         {
+            // In the finally, so a cancelled preflight, a busy lock, a thrown exception and a completed
+            // engage all clear it. Leaving it set would silently freeze every page in the app.
+            App.Mutating = false;
             SetBusy(false);
         }
     }
@@ -274,8 +299,22 @@ public partial class DashboardPage
                 return;
             }
 
+            // No preflight on this path - Restore is the undo and never needs consent - so the flag goes
+            // up immediately before the engine call rather than before a dialog.
+            App.Mutating = true;
+
             var engine = AppState.CreateEngine();
-            var result = await Task.Run(() => engine.RevertSession(sessionId, "restore"));
+
+            var result = await Task.Run(() =>
+                MutatingLock.TryRun(() => engine.RevertSession(sessionId, "restore"), out var reverted)
+                    ? reverted
+                    : null);
+
+            if (result is null)
+            {
+                ShowResult(ResultTone.Bad, MutatingLock.BusyMessage);
+                return;
+            }
 
             if (result.Clean)
             {
@@ -320,12 +359,30 @@ public partial class DashboardPage
         }
         finally
         {
+            App.Mutating = false;
             SetBusy(false);
         }
     }
 
+    /// <summary>
+    /// Re-reads the machine and re-renders, then tells the shell to rebuild the other pages.
+    /// </summary>
+    /// <remarks>
+    /// CLEARS <see cref="App.Mutating"/> FIRST, and the order is load-bearing. This method raises
+    /// <c>StateChanged</c>, the shell answers by calling <c>InvalidatePages</c>, and that now refuses to
+    /// run while the flag is set — so leaving the flag up until the caller's <c>finally</c> would mean
+    /// every page except this one silently kept rendering the machine as it was before the operation.
+    /// The <c>finally</c> blocks still clear it, for the paths that never reach here: a cancelled
+    /// preflight, a busy lock, a thrown exception.
+    /// <para>
+    /// Safe because reaching this line means the mutation is over: the engine has returned and the
+    /// cross-process lock has already been released inside the <c>Task.Run</c> body.
+    /// </para>
+    /// </remarks>
     private void Refresh()
     {
+        App.Mutating = false;
+
         _state = AppState.Load();
         Render();
         StateChanged?.Invoke(this, EventArgs.Empty);
