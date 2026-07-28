@@ -48,6 +48,43 @@ public sealed class FakeProcessControl : IProcessControl
         return Add(imageName, imagePath, identity.Pid);
     }
 
+    /// <summary>
+    /// PIDs that will accept a close request and never exit, modelling an application sitting on a
+    /// "save your work?" prompt — the case the graceful ladder exists to respect.
+    /// </summary>
+    public HashSet<int> RefuseToExit { get; } = [];
+
+    /// <summary>Close requests received, in order. Asserted on to prove nothing was force-killed.</summary>
+    public List<string> CloseLog { get; } = [];
+
+    public ProcessCloseResult TryClose(ProcessIdentity identity, TimeSpan timeout, out string diagnosis)
+    {
+        if (!_byPid.TryGetValue(identity.Pid, out var found)
+            || found.Identity.CreatedUtcTicks != identity.CreatedUtcTicks)
+        {
+            diagnosis = "already exited before Quiesce asked";
+            return ProcessCloseResult.AlreadyGone;
+        }
+
+        if (!found.HasVisibleWindow)
+        {
+            diagnosis = "has no top-level window, so there is nothing to send a close request to";
+            return ProcessCloseResult.NoWindow;
+        }
+
+        CloseLog.Add($"close {found.ImageName} ({identity.Pid})");
+
+        if (RefuseToExit.Contains(identity.Pid))
+        {
+            diagnosis = "was asked to close and is still running; it is most likely prompting about unsaved work";
+            return ProcessCloseResult.DeclinedToClose;
+        }
+
+        _byPid.Remove(identity.Pid);
+        diagnosis = string.Empty;
+        return ProcessCloseResult.Closed;
+    }
+
     public IReadOnlyList<ProcessSnapshot> Enumerate() => _byPid.Values.ToList();
 
     public ProcessSnapshot Query(ProcessIdentity identity)

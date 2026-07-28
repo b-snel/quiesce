@@ -118,8 +118,66 @@ public sealed record ProcessSnapshot
     public bool Present { get; init; } = true;
 }
 
+/// <summary>How a close attempt ended.</summary>
+public enum ProcessCloseResult
+{
+    /// <summary>It exited within the timeout.</summary>
+    Closed,
+
+    /// <summary>It had already exited before Quiesce asked. Success, not failure.</summary>
+    AlreadyGone,
+
+    /// <summary>A guardrail refused before anything was attempted.</summary>
+    Refused,
+
+    /// <summary>
+    /// It has no top-level window, so there is nothing to send a polite request to.
+    /// </summary>
+    /// <remarks>
+    /// Not an error and not something to escalate against. Quiesce has no impolite option — a
+    /// windowless background process simply cannot be asked to leave, and 263 of the 272 processes on
+    /// the development machine are in this category.
+    /// </remarks>
+    NoWindow,
+
+    /// <summary>
+    /// It was asked and did not exit in time.
+    /// </summary>
+    /// <remarks>
+    /// The overwhelmingly common cause is a modal "save your work?" prompt, which is the exact
+    /// situation the graceful ladder exists to respect. The prompt is left on screen and the process
+    /// is left running.
+    /// </remarks>
+    DeclinedToClose,
+}
+
 /// <summary>
-/// Read access to live processes. The mutation surface arrives with the close ladder and throttle.
+/// The result of one close attempt, with enough detail to report it without re-reading the machine.
+/// </summary>
+/// <remarks>
+/// Carries the image path because a closed process cannot be queried afterwards, and telling the user
+/// <em>which program</em> was closed is the whole value of the record. Restore lists these; it never
+/// relaunches them.
+/// </remarks>
+public sealed record ProcessCloseOutcome
+{
+    public required ProcessIdentity Identity { get; init; }
+
+    public required string ImageName { get; init; }
+
+    public string? ImagePath { get; init; }
+
+    public required ProcessCloseResult Result { get; init; }
+
+    /// <summary>Plain-language explanation. Always populated for anything other than a clean close.</summary>
+    public string Detail { get; init; } = string.Empty;
+
+    /// <summary>True when the machine ended up in the state Quiesce asked for.</summary>
+    public bool Succeeded => Result is ProcessCloseResult.Closed or ProcessCloseResult.AlreadyGone;
+}
+
+/// <summary>
+/// Read access to live processes, plus the graceful close request.
 /// </summary>
 /// <remarks>
 /// A seam rather than direct <see cref="Process"/> calls, for the same reason
@@ -140,4 +198,28 @@ public interface IProcessControl
     /// false when the PID is gone <em>or</em> when it now belongs to a different process.
     /// </summary>
     ProcessSnapshot Query(ProcessIdentity identity);
+
+    /// <summary>
+    /// Asks a process to close by posting <c>WM_CLOSE</c> to each of its top-level windows, then
+    /// waits for it to exit.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Never escalates. There is no force path here and no force path anywhere in Quiesce — a process
+    /// that declines is left running and reported, exactly as <see cref="IServiceControl.TryStop"/>
+    /// leaves a stubborn service alone. Terminating a program discards unsaved work with no prompt,
+    /// which is a worse outcome than a slightly less lean machine.
+    /// </para>
+    /// <para>
+    /// Returns false with a diagnosis rather than throwing, including when the process has no window
+    /// to talk to.
+    /// </para>
+    /// </remarks>
+    /// <returns>
+    /// What happened, as a value rather than a bool. An earlier draft returned bool and left the
+    /// caller to distinguish "no window" from "declined" by string-matching the diagnosis, which
+    /// meant rewording a message here silently reclassified outcomes there.
+    /// <see cref="ProcessCloseResult.Refused"/> is never returned — guardrails are the caller's job.
+    /// </returns>
+    ProcessCloseResult TryClose(ProcessIdentity identity, TimeSpan timeout, out string diagnosis);
 }

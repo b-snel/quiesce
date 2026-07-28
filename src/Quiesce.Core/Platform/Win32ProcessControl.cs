@@ -27,16 +27,24 @@ public sealed class Win32ProcessControl : IProcessControl
 {
     private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
     private const int MaxPath = 32767;
+    private const uint WM_CLOSE = 0x0010;
+    private const int PollIntervalMs = 100;
+
+    private delegate bool EnumWindowsProc(nint window, nint param);
 
     public IReadOnlyList<ProcessSnapshot> Enumerate()
     {
         var results = new List<ProcessSnapshot>();
 
+        // One window enumeration for the whole pass, shared across every process. Asking per process
+        // would mean walking every window on the desktop once per process — several hundred passes.
+        var windowed = PidsWithVisibleWindows();
+
         foreach (var process in Process.GetProcesses())
         {
             using (process)
             {
-                var snapshot = Describe(process);
+                var snapshot = Describe(process, windowed);
                 if (snapshot is not null)
                 {
                     results.Add(snapshot);
@@ -54,7 +62,7 @@ public sealed class Win32ProcessControl : IProcessControl
         try
         {
             using var process = Process.GetProcessById(identity.Pid);
-            var snapshot = Describe(process);
+            var snapshot = Describe(process, PidsWithVisibleWindows());
 
             // The PID exists, but is it still the SAME process? A recycled PID that answers to the
             // wrong creation time must read as absent, or restore would put a captured prior onto
@@ -74,6 +82,111 @@ public sealed class Win32ProcessControl : IProcessControl
         }
     }
 
+    public ProcessCloseResult TryClose(ProcessIdentity identity, TimeSpan timeout, out string diagnosis)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+
+        // Re-verify identity first. Between the plan and this call the PID may have been recycled,
+        // and posting WM_CLOSE at a recycled PID would close whatever now owns that number.
+        var live = Query(identity);
+        if (!live.Present)
+        {
+            diagnosis = "already exited before Quiesce asked";
+            return ProcessCloseResult.AlreadyGone;
+        }
+
+        // Window messages do not cross session boundaries. Posting into another session silently
+        // does nothing, which would read as "the app declined" rather than "we cannot reach it".
+        var ownSession = CurrentSessionId();
+        if (live.SessionId != ownSession)
+        {
+            diagnosis = $"runs in session {live.SessionId}, not this session ({ownSession}); " +
+                        "window messages do not cross sessions, so it cannot be asked to close";
+            return ProcessCloseResult.NoWindow;
+        }
+
+        var windows = TopLevelWindows(identity.Pid);
+        if (windows.Count == 0)
+        {
+            diagnosis = "has no top-level window, so there is nothing to send a close request to";
+            return ProcessCloseResult.NoWindow;
+        }
+
+        var posted = 0;
+        foreach (var window in windows)
+        {
+            if (PostMessageW(window, WM_CLOSE, nint.Zero, nint.Zero))
+            {
+                posted++;
+            }
+        }
+
+        if (posted == 0)
+        {
+            // Usually UIPI: a lower-integrity caller cannot post to a window owned by an elevated
+            // process. Reported as NoWindow rather than DeclinedToClose because the application never
+            // heard the request - blaming it for declining would be wrong.
+            diagnosis = $"Windows refused to deliver the close request to any of its {windows.Count} " +
+                        "window(s); this is normal when the target runs at a higher integrity level";
+            return ProcessCloseResult.NoWindow;
+        }
+
+        if (WaitForExit(identity, timeout))
+        {
+            diagnosis = string.Empty;
+            return ProcessCloseResult.Closed;
+        }
+
+        diagnosis =
+            $"was asked to close ({posted} of {windows.Count} window(s) accepted the request) and was " +
+            $"still running after {timeout.TotalSeconds:0}s. It is most likely prompting about unsaved " +
+            "work; that prompt is still on screen and the program is untouched.";
+        return ProcessCloseResult.DeclinedToClose;
+    }
+
+    private static int CurrentSessionId()
+    {
+        using var self = Process.GetCurrentProcess();
+        return self.SessionId;
+    }
+
+    /// <summary>Polls for exit rather than waiting on a handle, so a recycled PID cannot read as an exit.</summary>
+    private bool WaitForExit(ProcessIdentity identity, TimeSpan timeout)
+    {
+        var deadline = Environment.TickCount64 + (long)timeout.TotalMilliseconds;
+
+        while (Environment.TickCount64 < deadline)
+        {
+            if (!Query(identity).Present)
+            {
+                return true;
+            }
+
+            Thread.Sleep(PollIntervalMs);
+        }
+
+        return !Query(identity).Present;
+    }
+
+    private static List<nint> TopLevelWindows(int pid)
+    {
+        var found = new List<nint>();
+
+        EnumWindows(
+            (window, _) =>
+            {
+                if (GetWindowThreadProcessId(window, out var owner) != 0 && owner == pid && IsWindowVisible(window))
+                {
+                    found.Add(window);
+                }
+
+                return true;
+            },
+            nint.Zero);
+
+        return found;
+    }
+
     private static ProcessSnapshot Absent(ProcessIdentity identity) => new()
     {
         Identity = identity,
@@ -84,8 +197,38 @@ public sealed class Win32ProcessControl : IProcessControl
         Present = false,
     };
 
+    /// <summary>
+    /// Every PID owning at least one visible top-level window, from a single desktop-wide pass.
+    /// </summary>
+    /// <remarks>
+    /// This is the SAME source the close ladder uses to find windows to post to, and that matters.
+    /// An earlier version derived the inventory's window flag from <see cref="Process.MainWindowHandle"/>
+    /// instead, which disagreed: a live probe reported <c>window=False</c> for a process the ladder
+    /// then found one window on and successfully posted to. MainWindowHandle is unreliable for console
+    /// hosts and for applications whose first window is not their main one, so the flag reported to
+    /// the user was understating how many processes could actually be asked to close.
+    /// </remarks>
+    private static HashSet<int> PidsWithVisibleWindows()
+    {
+        var pids = new HashSet<int>();
+
+        EnumWindows(
+            (window, _) =>
+            {
+                if (IsWindowVisible(window) && GetWindowThreadProcessId(window, out var owner) != 0)
+                {
+                    pids.Add(owner);
+                }
+
+                return true;
+            },
+            nint.Zero);
+
+        return pids;
+    }
+
     /// <summary>Reads one process, or null only when it has genuinely exited.</summary>
-    private static ProcessSnapshot? Describe(Process process)
+    private static ProcessSnapshot? Describe(Process process, HashSet<int> pidsWithWindows)
     {
         int pid;
         string imageName;
@@ -133,7 +276,7 @@ public sealed class Win32ProcessControl : IProcessControl
                 ImagePath = TryReadImagePath(pid),
                 SessionId = TryReadSessionId(process),
                 PriorityClass = TryReadPriority(process),
-                HasVisibleWindow = TryHasWindow(process),
+                HasVisibleWindow = pidsWithWindows.Contains(pid),
             };
         }
         catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
@@ -151,18 +294,6 @@ public sealed class Win32ProcessControl : IProcessControl
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
             return -1;
-        }
-    }
-
-    private static bool TryHasWindow(Process process)
-    {
-        try
-        {
-            return process.MainWindowHandle != nint.Zero;
-        }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
-        {
-            return false;
         }
     }
 
@@ -215,4 +346,22 @@ public sealed class Win32ProcessControl : IProcessControl
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool QueryFullProcessImageNameW(
         nint process, uint flags, StringBuilder exeName, ref int size);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumWindows(EnumWindowsProc callback, nint param);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint GetWindowThreadProcessId(nint window, out int processId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(nint window);
+
+    // PostMessage, not SendMessage: SendMessage blocks until the target's message loop processes it,
+    // and a hung application would hang Quiesce with it. Posting is fire-and-forget, and the outcome
+    // is judged by whether the process actually exited rather than by what the call returned.
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessageW(nint window, uint message, nint wParam, nint lParam);
 }
