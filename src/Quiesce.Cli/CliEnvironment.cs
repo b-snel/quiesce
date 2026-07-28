@@ -56,16 +56,23 @@ internal sealed class CliEnvironment
         return CatalogLoader.LoadFile(path);
     }
 
-    public TransactionEngine CreateEngine() => new(
-        new Win32Registry(),
-        new Win32ActivationBroadcaster(),
-        Paths,
-        new EngineInfo
-        {
-            AppVersion = VersionInfo.Informational,
-            OsBuild = OsBuild(),
-            UserSid = QuiescePaths.CurrentUserSid(),
-        });
+    public TransactionEngine CreateEngine()
+    {
+        var broadcaster = new Win32ActivationBroadcaster();
+
+        return new TransactionEngine(
+            new Win32Registry(),
+            broadcaster,
+            Paths,
+            new EngineInfo
+            {
+                AppVersion = VersionInfo.Informational,
+                OsBuild = OsBuild(),
+                UserSid = QuiescePaths.CurrentUserSid(),
+            },
+            broadcaster,
+            new Win32ServiceControl());
+    }
 
     public static bool IsElevated()
     {

@@ -56,8 +56,45 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - **M3** — `scripts/baseline-diff.ps1`: recursive snapshot of every catalog subtree plus the live mouse curve,
   engage/restore/diff, repeated N times. Passing at 5 rounds over 16 entries and 1101 values.
 
+- **M4** — Service control. Ops are now polymorphic (`registry` | `service`) on the `kind`
+  discriminator the catalog already carried, so plan, journal, verify and revert share one code path.
+- **M4** — Three-fact capture: start type, delayed-auto flag and run state are captured and restored
+  **independently**, through `QueryServiceConfig`/`QueryServiceConfig2` rather than
+  `ServiceController`, which collapses Automatic-Delayed into Automatic and would silently convert
+  four of the nine shipping candidates to plain auto — slowing every subsequent boot.
+- **M4** — Guardrails: tier-0 never-touch list (enforced at catalog load *and* twice at runtime),
+  svchost co-tenancy keyed on live host PID, remote-session lock, stop-capability check,
+  transitive-dependent check, and trigger-started services clamped to Manual and never Disabled.
+- **M4** — Nine service entries, each individually toggleable and all off by default.
+- **M4** — `revert.cmd` now emits `sc.exe` inverses, including the distinct `start= delayed-auto`
+  token, and never restarts a service that was stopped.
+- **M4** — Refused steps are shown with their reason in both the CLI and the preflight dialog. A
+  guardrail the user cannot see is indistinguishable from a tweak that quietly did nothing.
+
 ### Fixed
 
+- **M4** — **Ordering bug found in review:** the start type was written before the service was
+  stopped. Disabling a service does not stop it, so a stop that then timed out would leave the
+  machine `Disabled + Running` — correct-looking for the whole session, after which the service
+  silently never returns at next boot. Stop now happens first, and a refused stop leaves the service
+  exactly as found.
+- **M4** — `DelayedAutostart` is written only when it differs from the live value. Six of the nine
+  candidates have no such value at all, and issuing the call materializes one — a silent registry
+  mutation that survives revert and quietly breaks the exact-restore promise.
+- **M4** — A boot-id sampling race made recovery intermittently believe the machine had rebooted and
+  auto-revert a live session, pulling tweaks out from under a running game. `CurrentBootId` samples
+  the clock and the uptime counter separately, so two calls in one boot can differ by a second;
+  comparison is now tolerance-based. Found via a flaky test that turned out to be a real defect.
+- **M4** — Neither the CLI nor the GUI wired `IServiceControl` into the engine, so every service step
+  was refused as "unavailable"; and `print-plan` then crashed rendering a refused step through the
+  registry branch.
+- **M4** — A malformed catalog threw a raw `JsonException` that no caller catches, crashing the CLI
+  with a stack trace instead of reporting what was wrong with the file.
+- **M4** — `EnumDependentServices` returns the full transitive closure, not direct dependents
+  (verified against the registry dependency graph). Documented so a future change does not add
+  caller-side recursion and corrupt the stop order.
+- **M4** — CLI contract tests shared one registry key across all seven tests, making them
+  order-dependent. Each instance now gets its own.
 - **M3** — A denied registry write crashed the process mid-apply with an unhandled
   `UnauthorizedAccessException`, leaving the machine dirty and the user holding a stack trace. Refused writes are
   now a typed diagnosis that rolls the entry back, and the reason is surfaced verbatim in both the CLI and GUI.

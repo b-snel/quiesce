@@ -52,8 +52,24 @@ public static class CatalogLoader
         }
 
         buffered.Position = 0;
-        var file = JsonSerializer.Deserialize<CatalogFile>(buffered, JsonOptions)
-            ?? throw new CatalogException($"{sourceName}: deserialized to null.");
+
+        CatalogFile? file;
+        try
+        {
+            file = JsonSerializer.Deserialize<CatalogFile>(buffered, JsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            // Surface every catalog problem as one exception type. Callers catch CatalogException;
+            // letting a raw JsonException escape means a malformed catalog crashes the CLI with a
+            // stack trace instead of printing what is wrong with the file.
+            throw new CatalogException($"{sourceName}: malformed catalog — {ex.Message}");
+        }
+
+        if (file is null)
+        {
+            throw new CatalogException($"{sourceName}: deserialized to null.");
+        }
 
         Validate(file, sourceName);
         return file;
@@ -95,11 +111,52 @@ public static class CatalogLoader
 
             foreach (var op in entry.Ops)
             {
-                if (op.Kind != "registry")
+                if (op is ServiceOpSpec serviceOp)
                 {
-                    Fail($"op kind '{op.Kind}' is not supported by this build.");
+                    ValidateService(serviceOp, entry, Fail);
+                    continue;
                 }
 
+                if (op is not RegistryOpSpec registryOp)
+                {
+                    Fail($"op kind '{op.GetType().Name}' is not supported by this build.");
+                    continue;
+                }
+
+                ValidateRegistry(registryOp, entry, sourceName, Fail);
+            }
+        }
+    }
+
+    private static void ValidateService(ServiceOpSpec op, CatalogEntry entry, Action<string> Fail)
+    {
+        if (string.IsNullOrWhiteSpace(op.Service))
+        {
+            Fail("service name is required.");
+        }
+
+        // Service configuration is machine-wide, so an entry claiming otherwise would let the UI
+        // offer it to an unelevated user who could only ever watch it fail.
+        if (!entry.RequiresAdmin)
+        {
+            Fail($"service op '{op.Service}' requires admin, but the entry declares requiresAdmin: false.");
+        }
+
+        // Data can only ever narrow the guardrail. A catalog - shipped by anyone, including a
+        // future me - must not be able to talk Quiesce into reconfiguring a tier-0 service.
+        if (Guardrails.IsServiceProtected(op.Service))
+        {
+            Fail($"service '{op.Service}' is on the never-touch list and cannot appear in a catalog.");
+        }
+
+        if (op.StartMode == ServiceStartMode.Automatic && op.StopNow)
+        {
+            Fail($"service '{op.Service}' asks to stop while staying Automatic; it would restart at next boot.");
+        }
+    }
+
+    private static void ValidateRegistry(RegistryOpSpec op, CatalogEntry entry, string sourceName, Action<string> Fail)
+    {
                 if (op.View != "Registry64")
                 {
                     Fail($"op view '{op.View}' — only Registry64 is allowed. WOW6432Node redirection is how writes silently miss.");
@@ -137,8 +194,6 @@ public static class CatalogLoader
                 {
                     Fail($"op targets the admin-owned per-user policy subtree '{op.Subkey}' but requiresAdmin is false.");
                 }
-            }
-        }
     }
 
     public static RegistryValueKind? ParseKind(string kind) => kind switch

@@ -90,7 +90,8 @@ public sealed record AppState
                 OsBuild = $"{Environment.OSVersion.Version.Major}.{Environment.OSVersion.Version.Minor}.{Environment.OSVersion.Version.Build}",
                 UserSid = QuiescePaths.CurrentUserSid(),
             },
-            broadcaster);
+            broadcaster,
+            new Win32ServiceControl());
     }
 
     public static string AppVersion() =>

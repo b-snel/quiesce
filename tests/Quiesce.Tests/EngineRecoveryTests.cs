@@ -2,6 +2,7 @@ using System.Text.Json;
 using Quiesce.Core.Catalog;
 using Quiesce.Core.Engine;
 using Quiesce.Core.Journal;
+using Quiesce.Core.Platform;
 
 namespace Quiesce.Tests;
 
@@ -59,6 +60,26 @@ public class EngineRecoveryTests : IDisposable
         Assert.Equal(0, result!.Reverted);
         Assert.Equal(0u, _h.Registry.Peek(target)!.Data.GetUInt32());
         Assert.True(_h.State.IsDirty);
+    }
+
+    [Fact]
+    public void Boot_id_sampling_jitter_is_not_mistaken_for_a_reboot()
+    {
+        // CurrentBootId() samples the clock and the uptime counter separately, so two calls in the
+        // same boot can land on different seconds. Comparing for exact equality made recovery
+        // intermittently decide the machine had rebooted and auto-revert a live session - pulling
+        // tweaks out from under a running game. This pins the tolerance.
+        var recorded = QuiescePaths.CurrentBootId();
+        var shifted = (long.Parse(recorded, System.Globalization.CultureInfo.InvariantCulture) - 1)
+            .ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+        Assert.True(QuiescePaths.IsSameBoot(recorded), "the current boot id must match itself");
+        Assert.True(QuiescePaths.IsSameBoot(shifted), "a one-second sampling shift is not a reboot");
+
+        // A genuine reboot moves boot time by far more than the jitter window.
+        var muchEarlier = (long.Parse(recorded, System.Globalization.CultureInfo.InvariantCulture) - 3600)
+            .ToString(System.Globalization.CultureInfo.InvariantCulture);
+        Assert.False(QuiescePaths.IsSameBoot(muchEarlier), "an hour's difference is a different boot");
     }
 
     [Fact]

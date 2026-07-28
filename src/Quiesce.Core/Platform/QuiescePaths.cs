@@ -36,14 +36,38 @@ public sealed class QuiescePaths
     public string SessionDir(Guid sessionId) => Path.Combine(JournalRoot, sessionId.ToString("D"));
 
     /// <summary>
-    /// A value that changes on every boot, recorded in <c>sessionStart</c> so recovery can tell
-    /// "dirty in this boot" from "dirty and rebooted since". Derived from boot time truncated to
-    /// the second — precise enough to distinguish boots, and needs no WMI.
+    /// Approximate boot time in unix seconds, recorded in <c>sessionStart</c> so recovery can tell
+    /// "dirty in this boot" from "dirty and rebooted since".
     /// </summary>
+    /// <remarks>
+    /// Derived as <c>now - uptime</c>, which needs no WMI but is only approximate: the two readings
+    /// are taken a moment apart, so successive calls within one boot can differ by a second or so.
+    /// Compare with <see cref="IsSameBoot"/>, never with string equality — see the tolerance note there.
+    /// </remarks>
     public static string CurrentBootId()
     {
         var bootUtc = DateTimeOffset.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64);
         return bootUtc.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Whether a recorded boot id refers to the boot this process is running in.
+    /// </summary>
+    /// <remarks>
+    /// Tolerance-based on purpose. <see cref="CurrentBootId"/> samples the clock and the uptime
+    /// counter separately, so two calls in the same boot routinely land on different seconds.
+    /// Comparing them for exact equality made recovery intermittently conclude that the machine had
+    /// rebooted and auto-revert a session that was still live — pulling the tweaks out from under a
+    /// running game. A reboot takes orders of magnitude longer than the sampling jitter, so a few
+    /// seconds of slack separates the two cases cleanly.
+    /// </remarks>
+    public static bool IsSameBoot(string recordedBootId)
+    {
+        const int toleranceSeconds = 5;
+
+        return long.TryParse(recordedBootId, System.Globalization.CultureInfo.InvariantCulture, out var recorded)
+            && long.TryParse(CurrentBootId(), System.Globalization.CultureInfo.InvariantCulture, out var current)
+            && Math.Abs(current - recorded) <= toleranceSeconds;
     }
 
     /// <summary>SID of the user this process runs as. Recorded on every per-user registry op.</summary>

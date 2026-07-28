@@ -150,6 +150,69 @@ public class RevertScriptTests : IDisposable
     }
 
     [Fact]
+    public void Delayed_auto_service_is_restored_with_the_delayed_flag()
+    {
+        // "sc config start= auto" on a service that was Automatic-Delayed silently converts it to
+        // plain auto and slows every subsequent boot. The distinct sc.exe token is the whole point.
+        var script = Emit(w => w.AppendServiceInverse(1, new ServiceSnapshot
+        {
+            Service = "InventorySvc",
+            Present = true,
+            StartType = ServiceStartType.Automatic,
+            DelayedAutostart = true,
+            RunState = ServiceRunState.Running,
+        }));
+
+        Assert.Contains("sc config \"InventorySvc\" start= delayed-auto", script);
+        Assert.Contains("sc start \"InventorySvc\"", script);
+    }
+
+    [Fact]
+    public void Plain_automatic_service_does_not_get_the_delayed_token()
+    {
+        var script = Emit(w => w.AppendServiceInverse(1, new ServiceSnapshot
+        {
+            Service = "Spooler",
+            Present = true,
+            StartType = ServiceStartType.Automatic,
+            DelayedAutostart = false,
+            RunState = ServiceRunState.Running,
+        }));
+
+        Assert.Contains("start= auto", script);
+        Assert.DoesNotContain("delayed-auto", script);
+    }
+
+    [Fact]
+    public void A_service_that_was_stopped_is_not_restarted_by_the_script()
+    {
+        var script = Emit(w => w.AppendServiceInverse(1, new ServiceSnapshot
+        {
+            Service = "MapsBroker",
+            Present = true,
+            StartType = ServiceStartType.Automatic,
+            DelayedAutostart = true,
+            RunState = ServiceRunState.Stopped,
+        }));
+
+        Assert.Contains("sc config \"MapsBroker\" start= delayed-auto", script);
+        Assert.DoesNotContain("sc start", script);
+    }
+
+    [Fact]
+    public void An_absent_service_produces_a_note_not_a_command()
+    {
+        var script = Emit(w => w.AppendServiceInverse(1, new ServiceSnapshot
+        {
+            Service = "Fax",
+            Present = false,
+        }));
+
+        Assert.DoesNotContain("sc config", script);
+        Assert.Contains("not present", script);
+    }
+
+    [Fact]
     public void Activation_that_reg_exe_cannot_replay_is_called_out()
     {
         // Honesty in the fallback path too: the script says what it cannot do rather than

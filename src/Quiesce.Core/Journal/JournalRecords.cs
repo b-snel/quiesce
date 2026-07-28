@@ -20,6 +20,7 @@ namespace Quiesce.Core.Journal;
 [JsonDerivedType(typeof(PlannedRecord), "planned")]
 [JsonDerivedType(typeof(ApplyingRecord), "applying")]
 [JsonDerivedType(typeof(AppliedRecord), "applied")]
+[JsonDerivedType(typeof(SideEffectRecord), "sideEffect")]
 [JsonDerivedType(typeof(EntryRolledBackRecord), "entryRolledBack")]
 [JsonDerivedType(typeof(CommittedRecord), "committed")]
 [JsonDerivedType(typeof(RevertStartRecord), "revertStart")]
@@ -78,11 +79,26 @@ public sealed record PlannedRecord : JournalRecord
     [JsonPropertyName("scope")]
     public required TweakScope Scope { get; init; }
 
+    /// <summary>Human-readable identity of what is being changed. Rendered in the preflight list.</summary>
     [JsonPropertyName("target")]
-    public required RegistryTarget Target { get; init; }
+    public required string Target { get; init; }
+
+    /// <summary>Registry target, when this step is a registry op.</summary>
+    [JsonPropertyName("registryTarget")]
+    public RegistryTarget? RegistryTarget { get; init; }
 
     [JsonPropertyName("intendedNew")]
-    public required RegistryData IntendedNew { get; init; }
+    public RegistryData? IntendedNew { get; init; }
+
+    /// <summary>Service being reconfigured, when this step is a service op.</summary>
+    [JsonPropertyName("service")]
+    public string? Service { get; init; }
+
+    [JsonPropertyName("intendedStartType")]
+    public ServiceStartType? IntendedStartType { get; init; }
+
+    [JsonPropertyName("intendedStop")]
+    public bool? IntendedStop { get; init; }
 
     [JsonPropertyName("activation")]
     public IReadOnlyList<ActivationKind> Activation { get; init; } = [];
@@ -103,14 +119,36 @@ public sealed record ApplyingRecord : JournalRecord
     [JsonPropertyName("scope")]
     public required TweakScope Scope { get; init; }
 
+    /// <summary>Human-readable identity, so a journal is legible without the catalog.</summary>
     [JsonPropertyName("target")]
-    public required RegistryTarget Target { get; init; }
+    public required string Target { get; init; }
+
+    // Exactly one of the registry or service pair is populated, decided by the op kind. Kept as
+    // concrete optional fields rather than a polymorphic union because the revert binary must be
+    // able to read old journals for as long as they exist on disk, and adding a field is a
+    // backward-compatible change in a way that re-shaping one is not.
+
+    [JsonPropertyName("registryTarget")]
+    public RegistryTarget? RegistryTarget { get; init; }
 
     [JsonPropertyName("prior")]
-    public required RegistryProbe Prior { get; init; }
+    public RegistryProbe? Prior { get; init; }
 
     [JsonPropertyName("intendedNew")]
-    public required RegistryData IntendedNew { get; init; }
+    public RegistryData? IntendedNew { get; init; }
+
+    [JsonPropertyName("service")]
+    public string? Service { get; init; }
+
+    /// <summary>Three independent facts captured before the change: type, delayed-auto, run state.</summary>
+    [JsonPropertyName("servicePrior")]
+    public ServicePrior? ServicePrior { get; init; }
+
+    [JsonPropertyName("intendedStartType")]
+    public ServiceStartType? IntendedStartType { get; init; }
+
+    [JsonPropertyName("intendedStop")]
+    public bool? IntendedStop { get; init; }
 
     /// <summary>Broadcasts revert must re-issue. In the journal, not the catalog, on purpose.</summary>
     [JsonPropertyName("activation")]
@@ -133,6 +171,31 @@ public sealed record AppliedRecord : JournalRecord
     /// <summary>"ok" or a typed diagnosis. Driven by a re-read, never by the write's return code.</summary>
     [JsonPropertyName("verify")]
     public required string Verify { get; init; }
+}
+
+/// <summary>
+/// A process died as a consequence of a step, without having been a target.
+/// </summary>
+/// <remarks>
+/// Stopping a service takes its hosted processes with it — the documented case is CDPSvc killing
+/// PhoneExperienceHost and CrossDeviceService. Restarting the service does not bring those back,
+/// so "restored exactly" would be false for them. Recording the collateral is what lets the app
+/// say so instead of quietly overstating what its undo covers.
+/// </remarks>
+public sealed record SideEffectRecord : JournalRecord
+{
+    [JsonPropertyName("stepId")]
+    public required int StepId { get; init; }
+
+    [JsonPropertyName("kind")]
+    public required string Kind { get; init; }
+
+    [JsonPropertyName("detail")]
+    public required string Detail { get; init; }
+
+    /// <summary>False when Quiesce cannot bring this back, which the UI must not hide.</summary>
+    [JsonPropertyName("recoverable")]
+    public required bool Recoverable { get; init; }
 }
 
 /// <summary>A multi-op entry failed partway and every step of it was rolled back.</summary>

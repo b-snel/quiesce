@@ -41,10 +41,55 @@ public class CatalogTests
     [Fact]
     public void Unknown_op_kind_is_refused()
     {
-        var json = EntryJson(opKind: "service");
+        // "service" is a real kind now, so this uses a discriminator that genuinely does not exist.
+        var json = EntryJson(opKind: "wmi");
 
         var ex = Assert.Throws<CatalogException>(() => Load(json));
-        Assert.Contains("not supported", ex.Message);
+        Assert.Contains("malformed catalog", ex.Message);
+    }
+
+    [Fact]
+    public void A_service_op_naming_a_protected_service_is_refused()
+    {
+        // Guardrails are compile-time constants that data can narrow but never widen. A catalog
+        // shipped by anyone must not be able to talk Quiesce into reconfiguring a tier-0 service.
+        var json = """
+        {
+          "schemaVersion": 1,
+          "catalogVersion": "x",
+          "entries": [{
+            "id": "svc.bad", "category": "test", "title": "t",
+            "evidence": "Measured", "impact": "Low", "riskTier": 1, "scope": "Session",
+            "requiresAdmin": true, "requiresReboot": false,
+            "ops": [{ "kind": "service", "service": "DcomLaunch", "startMode": "Disabled" }],
+            "whatItBreaks": "everything"
+          }]
+        }
+        """;
+
+        var ex = Assert.Throws<CatalogException>(() => Load(json));
+        Assert.Contains("never-touch", ex.Message);
+    }
+
+    [Fact]
+    public void A_service_op_must_declare_requiresAdmin()
+    {
+        var json = """
+        {
+          "schemaVersion": 1,
+          "catalogVersion": "x",
+          "entries": [{
+            "id": "svc.noadmin", "category": "test", "title": "t",
+            "evidence": "Measured", "impact": "Low", "riskTier": 1, "scope": "Session",
+            "requiresAdmin": false, "requiresReboot": false,
+            "ops": [{ "kind": "service", "service": "SysMain", "startMode": "Manual" }],
+            "whatItBreaks": "nothing"
+          }]
+        }
+        """;
+
+        var ex = Assert.Throws<CatalogException>(() => Load(json));
+        Assert.Contains("requiresAdmin", ex.Message);
     }
 
     [Fact]

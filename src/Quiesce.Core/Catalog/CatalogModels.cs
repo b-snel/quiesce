@@ -87,13 +87,64 @@ public enum CatalogHive
     HKCU,
 }
 
-/// <summary>A single registry mutation within a catalog entry.</summary>
-public sealed record RegistryOpSpec
+/// <summary>Reduced state a service is moved to. Never Disabled for trigger-started services.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<ServiceStartMode>))]
+public enum ServiceStartMode
 {
-    /// <summary>Discriminator. Only <c>registry</c> exists until M4.</summary>
-    [JsonPropertyName("kind")]
-    public required string Kind { get; init; }
+    Automatic,
+    Manual,
+    Disabled,
+}
 
+/// <summary>Base for every kind of mutation a catalog entry can contain.</summary>
+/// <remarks>
+/// Polymorphic on the <c>kind</c> discriminator that catalog JSON already carried, so adding op
+/// kinds does not fork the engine: plan, journal, verify and revert all operate on
+/// <see cref="OpSpec"/> and dispatch once, at the point of the actual system call.
+/// </remarks>
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "kind")]
+[JsonDerivedType(typeof(RegistryOpSpec), "registry")]
+[JsonDerivedType(typeof(ServiceOpSpec), "service")]
+public abstract record OpSpec
+{
+    /// <summary>True when applying this op needs administrator rights, independent of the entry.</summary>
+    [JsonIgnore]
+    public abstract bool NeedsAdmin { get; }
+
+    /// <summary>Short human identity for logs and the preflight list.</summary>
+    [JsonIgnore]
+    public abstract string TargetDescription { get; }
+}
+
+/// <summary>A service reconfiguration: reduce its start type, and optionally stop it now.</summary>
+public sealed record ServiceOpSpec : OpSpec
+{
+    /// <summary>Service short name (the SCM key name, not the display name).</summary>
+    [JsonPropertyName("service")]
+    public required string Service { get; init; }
+
+    /// <summary>
+    /// Start type to move the service to. Trigger-started services are clamped to
+    /// <see cref="ServiceStartMode.Manual"/> at plan time regardless of what the catalog asks for:
+    /// disabling a trigger-started service makes activation fail silently, and the dependent
+    /// feature breaks weeks later with no obvious cause.
+    /// </summary>
+    [JsonPropertyName("startMode")]
+    public required ServiceStartMode StartMode { get; init; }
+
+    /// <summary>Whether to stop it in this session as well as reconfiguring it.</summary>
+    [JsonPropertyName("stopNow")]
+    public bool StopNow { get; init; } = true;
+
+    /// <summary>Service configuration is always machine-wide.</summary>
+    public override bool NeedsAdmin => true;
+
+    public override string TargetDescription => $"service {Service}";
+}
+
+/// <summary>A single registry mutation within a catalog entry.</summary>
+public sealed record RegistryOpSpec : OpSpec
+{
     [JsonPropertyName("hive")]
     public required CatalogHive Hive { get; init; }
 
@@ -117,6 +168,16 @@ public sealed record RegistryOpSpec
     /// <summary>The "lean" data to write. Type must match <see cref="ExpectedKind"/>.</summary>
     [JsonPropertyName("leanData")]
     public required JsonElement LeanData { get; init; }
+
+    /// <summary>
+    /// HKLM always needs elevation — and so does the per-user policy subtree, which is owned by
+    /// Administrators and grants the interactive user read-only. Deriving this from the hive alone
+    /// is the bug that crashed an apply during M3.
+    /// </summary>
+    public override bool NeedsAdmin =>
+        Hive == CatalogHive.HKLM || Subkey.Contains(@"\Policies\", StringComparison.OrdinalIgnoreCase);
+
+    public override string TargetDescription => $@"{Hive}\{Subkey} :: {Value}";
 }
 
 /// <summary>One toggleable feature. The unit of user consent and of transactional atomicity.</summary>
@@ -158,7 +219,7 @@ public sealed record CatalogEntry
     public int MinBuild { get; init; }
 
     [JsonPropertyName("ops")]
-    public required IReadOnlyList<RegistryOpSpec> Ops { get; init; }
+    public required IReadOnlyList<OpSpec> Ops { get; init; }
 
     [JsonPropertyName("activation")]
     public IReadOnlyList<ActivationKind> Activation { get; init; } = [];

@@ -108,6 +108,57 @@ public sealed class RevertScriptWriter : IDisposable
         _writer.WriteLine();
     }
 
+    /// <summary>
+    /// Appends the inverse of a service change as literal <c>sc.exe</c> commands.
+    /// </summary>
+    /// <remarks>
+    /// Start type and the delayed-auto flag are restored as separate facts, in that order, because
+    /// <c>sc config start= delayed-auto</c> only means anything on top of an automatic start — and
+    /// a service that was Automatic-Delayed and comes back plain Automatic silently slows every
+    /// subsequent boot. The service is started again only if it was actually running.
+    /// </remarks>
+    public void AppendServiceInverse(int stepId, ServiceSnapshot prior)
+    {
+        _writer.WriteLine($"REM --- step {stepId}: restore service {prior.Service}");
+
+        if (!prior.Present || prior.StartType is not { } startType)
+        {
+            _writer.WriteLine("REM  (service was not present; nothing to restore)");
+            _writer.WriteLine();
+            return;
+        }
+
+        var startArg = startType switch
+        {
+            ServiceStartType.Automatic when prior.DelayedAutostart => "delayed-auto",
+            ServiceStartType.Automatic => "auto",
+            ServiceStartType.Manual => "demand",
+            ServiceStartType.Disabled => "disabled",
+            ServiceStartType.Boot => "boot",
+            ServiceStartType.System => "system",
+            _ => null,
+        };
+
+        if (startArg is null)
+        {
+            _writer.WriteLine($"REM  (unknown prior start type '{startType}' - restore by hand)");
+            _writer.WriteLine();
+            return;
+        }
+
+        // sc.exe is famously picky: the space after "start=" is required.
+        _writer.WriteLine($"sc config \"{prior.Service}\" start= {startArg}");
+        _writer.WriteLine("if errorlevel 1 set QUIESCE_FAILED=1");
+
+        if (prior.RunState == ServiceRunState.Running)
+        {
+            _writer.WriteLine($"sc start \"{prior.Service}\" >nul 2>&1");
+            _writer.WriteLine("REM  (a start failure here is not fatal: the service may start on demand)");
+        }
+
+        _writer.WriteLine();
+    }
+
     /// <summary>Appends a human note (e.g. an activation the script cannot replay).</summary>
     public void AppendNote(string note) => _writer.WriteLine($"REM  NOTE: {note}");
 

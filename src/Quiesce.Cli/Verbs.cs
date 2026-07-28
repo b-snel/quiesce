@@ -70,20 +70,55 @@ internal static class Verbs
                 continue;
             }
 
+            // Refused steps get their own section below, with the reason.
+            if (step.RefusedReason is not null)
+            {
+                continue;
+            }
+
             Console.WriteLine($"  step {step.StepId}  [{step.EntryId}]");
             Console.WriteLine($"    target: {step.Target}");
-            Console.WriteLine($"    prior:  {DescribeProbe(step.Prior)}");
-            Console.WriteLine($"    write:  {step.IntendedNew.Kind} {JsonSerializer.Serialize(step.IntendedNew.Data)}");
+
+            if (step.ServiceBefore is { } svc)
+            {
+                Console.WriteLine(
+                    $"    prior:  startType={svc.StartType}" +
+                    (svc.DelayedAutostart ? " (delayed)" : string.Empty) +
+                    $", {svc.RunState}");
+                Console.WriteLine(
+                    $"    change: startType={step.IntendedStartType}" +
+                    (step.IntendedStop ? ", stop now" : ", leave running"));
+            }
+            else
+            {
+                Console.WriteLine($"    prior:  {DescribeProbe(step.Prior!)}");
+                Console.WriteLine($"    write:  {step.IntendedNew!.Kind} {JsonSerializer.Serialize(step.IntendedNew.Data)}");
+            }
+
             if (step.Activation.Count > 0)
             {
                 Console.WriteLine($"    then:   broadcast {string.Join(", ", step.Activation)}");
             }
         }
 
+        // Refusals are shown, never silently dropped. A guardrail the user cannot see is
+        // indistinguishable from a tweak that quietly did nothing.
+        var refused = plan.RefusedSteps.ToList();
+        if (refused.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"REFUSED by guardrails ({refused.Count}) — these will not be attempted:");
+            foreach (var step in refused)
+            {
+                Console.WriteLine($"  {step.Target}  [{step.EntryId}]");
+                Console.WriteLine($"    {step.RefusedReason}");
+            }
+        }
+
         if (plan.RequiresElevation && !CliEnvironment.IsElevated())
         {
             Console.WriteLine();
-            Console.WriteLine("note: this plan writes HKLM and will need an elevated prompt to engage.");
+            Console.WriteLine("note: this plan needs administrator rights to engage.");
         }
 
         return CommandRouter.ExitCode.Ok;
@@ -223,10 +258,17 @@ internal static class Verbs
             var mismatches = new List<string>();
             foreach (var step in mutations)
             {
-                var now = registry.Probe(step.Target);
-                if (!ProbesEqual(step.Prior, now))
+                // Only registry targets are byte-comparable here; service round-trips are asserted
+                // by the baseline-diff script, which can read the SCM's three facts back.
+                if (step.RegistryTarget is not { } target || step.Prior is not { } priorProbe)
                 {
-                    mismatches.Add($"step {step.StepId} {step.Target}: prior={DescribeProbe(step.Prior)} now={DescribeProbe(now)}");
+                    continue;
+                }
+
+                var now = registry.Probe(target);
+                if (!ProbesEqual(priorProbe, now))
+                {
+                    mismatches.Add($"step {step.StepId} {step.Target}: prior={DescribeProbe(priorProbe)} now={DescribeProbe(now)}");
                 }
             }
 

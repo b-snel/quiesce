@@ -1,780 +1,1129 @@
 {
-  "schemaVersion": 1,
-  "catalogVersion": "0.3.0",
-  "entries": [
-    {
-      "id": "privacy.diagnostic-data-off",
-      "category": "privacy",
-      "title": "Turn off Windows diagnostic data",
-      "evidence": "Situational",
-      "impact": "None",
-      "riskTier": 2,
-      "scope": "Persistent",
-      "requiresAdmin": true,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKLM",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection",
-          "value": "AllowTelemetry",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["None"],
-      "whatItBreaks": "Settings > Privacy & security > Diagnostics & feedback becomes read-only and shows 'Some of these settings are managed by your organization'. Blocks enrolling in the Windows Insider Program, which requires optional diagnostic data. Windows Update still finds and installs updates normally, but update-failure diagnostics stop being sent, so Microsoft cannot see problems specific to this PC. The Diagnostic Data Viewer and Recommended Troubleshooting stop returning data. This does NOT stop the DiagTrack service, which keeps running and keeps sending the Required set on editions that coerce the value. EDITION CAVEAT: level 0 is only honored on Enterprise, Education and Server. On Home and Pro the registry write succeeds and Quiesce will report success, but Windows silently treats it as 1 (Required) - you get the managed banner and no further reduction. This machine is Enterprise, so 0 genuinely applies here.",
-      "notes": "Valid values are 0/1/3 only, confirmed against C:\\Windows\\PolicyDefinitions\\DataCollection.admx on this box (policy class=Both, key=Software\\Policies\\Microsoft\\Windows\\DataCollection, enum items 0/1/3); level 2 (Enhanced) was removed from the schema. This GP path overrides the machine's current effective setting at HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\DataCollection\\AllowTelemetry, which reads REG_DWORD 3 here; deleting this policy value on revert returns the PC to 3. Verified: the target key exists with zero values and zero subkeys, so apply writes into an existing key and revert leaves it exactly as found. Evidence is Situational, not Measured, precisely because the effect is edition-conditional - see whatItBreaks. MERGE: shares the DataCollection policy key with privacy.feedback-frequency-never; the key already exists, so neither entry creates it and there is no shared created-key chain to double-delete on revert."
-    },
-    {
-      "id": "privacy.advertising-id-off",
-      "category": "privacy",
-      "title": "Turn off the per-user advertising ID",
-      "evidence": "Measured",
-      "impact": "None",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo",
-          "value": "Enabled",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["None"],
-      "whatItBreaks": "Nothing. Apps can still display ads; they simply can no longer read a stable per-user identifier to personalize those ads or correlate you across apps. The Settings > Privacy & security > General toggle flips off to match.",
-      "notes": "Verified live as REG_DWORD 0 on this machine, so Quiesce will elide this row as 'already lean'. Kept in the catalog because it is 1 by default on most fresh installs and on other user profiles. This is the per-user ID only; it does not block ad delivery. Passed through from the proposal unchanged - no defects found."
-    },
-    {
-      "id": "privacy.tailored-experiences-off",
-      "category": "privacy",
-      "title": "Stop using diagnostic data for tailored experiences",
-      "evidence": "Measured",
-      "impact": "None",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Privacy",
-          "value": "TailoredExperiencesWithDiagnosticDataEnabled",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["None"],
-      "whatItBreaks": "Nothing functional. Windows stops mining your diagnostic data to personalize the tips, suggestions, and promotional content it shows in Start, Settings, the lock screen, and the welcome experience. Those surfaces still appear; the content is just generic instead of targeted at you.",
-      "notes": "Verified live as REG_DWORD 1 here, so this is a real change and the kind is confirmed - no type trap. This is a per-user consent flag and is independent of privacy.diagnostic-data-off; setting AllowTelemetry to 0 does not clear it. Siblings in the same key, left untouched and confirmed present: PrivacyConsentPresentationVersion=2, PrivacyConsentSettingsVersion=5, PrivacyConsentSettingsValidMask=0x2f. MERGE: adjacent to bloat.contentdelivery-off - this one makes the suggestion content generic, that one stops the suggestion surfaces appearing. They target different values and do not collide; applying both is the coherent combination."
-    },
-    {
-      "id": "privacy.feedback-frequency-never",
-      "category": "privacy",
-      "title": "Stop Windows asking for feedback",
-      "evidence": "Cosmetic",
-      "impact": "None",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": true,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKLM",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection",
-          "value": "DoNotShowFeedbackNotifications",
-          "expectedKind": "DWord",
-          "leanData": 1
-        }
-      ],
-      "activation": ["None"],
-      "whatItBreaks": "Nothing. Windows stops spontaneously prompting you to rate features or answer survey popups. You can still open Feedback Hub and submit feedback yourself whenever you want. Settings > Privacy & security > Diagnostics & feedback shows the feedback-frequency control as managed by your organization. Be honest about what this is: it suppresses a nag. It does not reduce any data flow, so do not read it as a privacy win.",
-      "notes": "REPLACED the proposed HKCU\\SOFTWARE\\Microsoft\\Siuf\\Rules!NumberOfSIUFInPeriod op with the documented ADMX policy. Confirmed on this box in C:\\Windows\\PolicyDefinitions\\FeedbackNotifications.admx: policy DoNotShowFeedbackNotifications, class=Machine, key=Software\\Policies\\Microsoft\\Windows\\DataCollection, valueName=DoNotShowFeedbackNotifications, enabledValue decimal 1 (an ADMX decimal is written as REG_DWORD, so the kind is declared rather than guessed). Note the inverted polarity versus the Siuf approach: lean here is 1, not 0. The target key exists and is empty (verified), so apply writes one value into an existing key and revert deletes it with zero residue. The Siuf\\Rules subkey genuinely does not exist on this build (parent Siuf has only Staging and State), which is exactly why its value kind could not be confirmed - authoring an unverifiable kind is the silent-no-op failure mode this catalog exists to avoid. Cost of the swap: requiresAdmin becomes true and Settings gains an org-managed banner."
-    },
-    {
-      "id": "privacy.activity-history-off",
-      "category": "privacy",
-      "title": "Stop recording and uploading activity history",
-      "evidence": "Situational",
-      "impact": "None",
-      "riskTier": 2,
-      "scope": "Persistent",
-      "requiresAdmin": true,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKLM",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Policies\\Microsoft\\Windows\\System",
-          "value": "PublishUserActivities",
-          "expectedKind": "DWord",
-          "leanData": 0
-        },
-        {
-          "kind": "registry",
-          "hive": "HKLM",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Policies\\Microsoft\\Windows\\System",
-          "value": "UploadUserActivities",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["None"],
-      "whatItBreaks": "Settings > Privacy & security > Activity history becomes read-only with an organization-managed banner. Windows stops writing which apps and documents you open into the local activity store, so anything that offers 'pick up where you left off' from that store loses its history. Sign out and back in for it to take full effect; until then the running session may keep publishing. Activities already cached are not deleted - clear them from the Settings page if that matters. On Windows 11 this is largely vestigial: Task View's Timeline UI was removed and Microsoft discontinued cloud sync of activity history in 2021, so in practice you will likely notice nothing.",
-      "notes": "Verified: both values absent, parent key exists with zero values and zero subkeys, so apply writes two values into an existing key and revert deletes them with zero residue. Absent means enabled by default. Key path, value names and 0/1 semantics confirmed against C:\\Windows\\PolicyDefinitions\\OSPolicy.admx on this box (both policies class=Machine, key=Software\\Policies\\Microsoft\\Windows\\System, disabledValue decimal 0). Evidence is Situational rather than Measured because the policy is documented and does apply, but how much this feature still collects on 25H2 after Timeline's removal is not verifiable locally. EnableActivityFeed is the related third policy and is deliberately not authored - see the exclusions list. requiresReboot left false because the registry change itself needs no reboot; the sign-out caveat is stated in whatItBreaks rather than forcing a reboot prompt."
-    },
-    {
-      "id": "privacy.inking-typing-personalization-off",
-      "category": "privacy",
-      "title": "Turn off inking and typing personalization",
-      "evidence": "Measured",
-      "impact": "None",
-      "riskTier": 2,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Personalization\\Settings",
-          "value": "AcceptedPrivacyPolicy",
-          "expectedKind": "DWord",
-          "leanData": 0
-        },
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\InputPersonalization",
-          "value": "RestrictImplicitTextCollection",
-          "expectedKind": "DWord",
-          "leanData": 1
-        },
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\InputPersonalization",
-          "value": "RestrictImplicitInkCollection",
-          "expectedKind": "DWord",
-          "leanData": 1
-        },
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\InputPersonalization\\TrainedDataStore",
-          "value": "HarvestContacts",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["None"],
-      "whatItBreaks": "Windows stops adding the words you type and the ink you write to your personal recognition dictionary, and stops harvesting names from your contacts into it. Autocorrect, text suggestions, and handwriting recognition keep working from the shipped language model but stop learning your names, jargon, and slang, and stop suggesting contact names. Words already learned are not deleted; clear them from Settings if you want them gone. Turning AcceptedPrivacyPolicy back to 0 can make Windows re-show the inking and typing consent prompt the next time you open that Settings page. On a desktop with a hardware keyboard the practical effect is small - this matters most for the touch keyboard, voice typing, and pen input.",
-      "notes": "All four values verified present with kind REG_DWORD on this machine, so there is no type ambiguity anywhere in this entry. Note the polarity difference: AcceptedPrivacyPolicy and HarvestContacts are lean at 0 while the two Restrict* values are lean at 1. Getting that backwards would leave collection fully on while appearing applied. Live state: AcceptedPrivacyPolicy=1, RestrictImplicitTextCollection=0, RestrictImplicitInkCollection=0, HarvestContacts=1 - personalization is currently fully ON. HarvestContacts was ADDED as a fourth op because the entry's title promised to turn off typing personalization while leaving contact harvesting into the same TrainedDataStore switched on. Tier 2 rather than 1 because there is genuine ongoing functional degradation, even though the change is trivially reversible and needs no admin. Siblings left untouched: TextHarvestingInstallationStatus=6, DisablePersInternal=0, MaximumInkStoreSize=0xc350."
-    },
-    {
-      "id": "bloat.consumer-features-off",
-      "category": "debloat",
-      "title": "Turn off Microsoft consumer experiences",
-      "evidence": "Situational",
-      "impact": "Medium",
-      "riskTier": 2,
-      "scope": "Persistent",
-      "requiresAdmin": true,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKLM",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent",
-          "value": "DisableWindowsConsumerFeatures",
-          "expectedKind": "DWord",
-          "leanData": 1
-        }
-      ],
-      "activation": ["None"],
-      "whatItBreaks": "Windows stops silently installing promoted third-party apps (Candy Crush, Spotify, TikTok and similar) into your Start menu, and stops cloud-driven app suggestions. On some builds this also freezes the Windows Spotlight lock-screen image rotation, so your lock screen may stop changing daily -- if you like the rotating photos, skip this one. It does not uninstall apps that are already there, and it does not affect the Microsoft Store, Windows Update, or anything you installed yourself. It has no performance effect. This is a machine-wide policy value: nothing broadcasts it to the running session, so expect it to take effect at your next sign-in rather than immediately.",
-      "notes": "LIVE STATE VERIFIED: the entire CloudContent policy key is ABSENT under both HKLM and HKCU, so this op creates the key plus the value. MERGE CORRECTION: the reviewed note said 'revert must delete the VALUE only -- do not delete the key, we have no tree snapshot'. That is wrong about this codebase. Win32Registry.SetValue captures the missing-key chain BEFORE CreateSubKey, and TransactionEngine.RestorePrior deletes the value and then calls DeleteCreatedKeysIfEmpty, which removes only keys Quiesce created and only while they are still empty. Revert therefore leaves no CloudContent residue unless something else has written into the key first. ADMX VERIFIED by parsing this build's own C:\\Windows\\PolicyDefinitions\\CloudContent.admx: class=Machine, key=Software\\Policies\\Microsoft\\Windows\\CloudContent, valueName=DisableWindowsConsumerFeatures, enabledValue decimal 1, disabledValue decimal 0, supportedOn=SUPPORTED_Windows_10_0_NOSERVER. Reader confirmed by UTF-16 string scan in ContentDeliveryManager.Utilities.dll, SettingsHandlers_ContentDeliveryManager.dll, cdpusersvc.dll and CustomShellHost.exe. EditionID=Enterprise here, so the Enterprise/Education-only gating does not bite. Evidence is Situational, not Measured: Microsoft migrated coverage to DisableCloudOptimizedContent and DisableConsumerAccountStateContent (both present in this same ADMX), so coverage on build 26200 is partial. Do not gate on ProductName, which still reads Windows 10 Enterprise here. MERGE: interacts with bloat.contentdelivery-off on the lock screen - see that entry's whatItBreaks."
-    },
-    {
-      "id": "bloat.contentdelivery-off",
-      "category": "debloat",
-      "title": "Turn off Content Delivery Manager suggestions and silent app installs",
-      "evidence": "Situational",
-      "impact": "Low",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
-          "value": "SilentInstalledAppsEnabled",
-          "expectedKind": "DWord",
-          "leanData": 0
-        },
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
-          "value": "PreInstalledAppsEnabled",
-          "expectedKind": "DWord",
-          "leanData": 0
-        },
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
-          "value": "OemPreInstalledAppsEnabled",
-          "expectedKind": "DWord",
-          "leanData": 0
-        },
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
-          "value": "SystemPaneSuggestionsEnabled",
-          "expectedKind": "DWord",
-          "leanData": 0
-        },
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
-          "value": "SoftLandingEnabled",
-          "expectedKind": "DWord",
-          "leanData": 0
-        },
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
-          "value": "RotatingLockScreenOverlayEnabled",
-          "expectedKind": "DWord",
-          "leanData": 0
-        },
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
-          "value": "FeatureManagementEnabled",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["ShChangeNotify"],
-      "whatItBreaks": "Settings stops showing suggested-content banners, the lock screen stops overlaying Spotlight tips and fun facts on top of the image, Windows stops showing tip popups after updates, and Windows stops silently installing promoted apps into your Start menu. As far as this entry is concerned the lock screen photo itself still rotates -- that is RotatingLockScreenEnabled, which none of these ops touch. Be aware that bloat.consumer-features-off can freeze Spotlight rotation on some builds, so if you apply that entry too, the photo may stop changing. Nothing you installed is removed, no Microsoft Store functionality is lost, and no service or system component is disabled. This is a clutter and privacy change with zero effect on frame rate. Content Delivery Manager caches aggressively, so suggestion surfaces already on screen and app installs already queued may persist until your next sign-in.",
-      "notes": "LIVE STATE VERIFIED, all REG_DWORD: SilentInstalledAppsEnabled=1, PreInstalledAppsEnabled=1, OemPreInstalledAppsEnabled=1, SystemPaneSuggestionsEnabled=1, SoftLandingEnabled=1, RotatingLockScreenOverlayEnabled=1, FeatureManagementEnabled=0 (ALREADY LEAN -- op 7 elided on this box, so 6 of 7 ops execute here). All seven exist with matching DWord kind, so there is no silent-no-op risk. Reader confirmed by direct UTF-16 scan: FeatureManagementEnabled and SystemPaneSuggestionsEnabled in ContentDeliveryManager.Background.dll; SoftLandingEnabled in SettingsHandlers_nt.dll, twinui.dll, SettingsEnvironment.Desktop.dll; RotatingLockScreenOverlayEnabled in ContentDeliveryManager.Utilities.dll, SettingsHandlers_nt.dll, Windows.UI.Immersive.dll; PreInstalledAppsEnabled in StartTileData.dll, twinui.pcshell.dll, RDXTaskFactory.dll. SilentInstalledAppsEnabled and OemPreInstalledAppsEnabled have no literal reader under C:\\Windows, but CDM composes some value names at runtime so that is a weak negative, not proof; kept because they are canonical, correctly typed and trivially reversible, which is also why this entry is Situational rather than Measured. activation is ShChangeNotify to match the already-shipped catalog/tweaks.json row for this same id. MERGE: this id already ships at catalogVersion 0.1.0 with ONE op and a different title; this row supersedes it with seven."
-    },
-    {
-      "id": "bloat.tips-and-suggestions-off",
-      "category": "debloat",
-      "title": "Turn off Windows tips, tricks and suggestion notifications",
-      "evidence": "Measured",
-      "impact": "Low",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
-          "value": "SubscribedContent-338389Enabled",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["ShChangeNotify"],
-      "whatItBreaks": "Windows stops showing tip, trick and suggestion notifications and the occasional post-update welcome tour. Settings > System > Notifications > Get tips and suggestions when using Windows will read Off. Nothing else changes: notifications from your own apps, security alerts and Windows Update notifications are all unaffected, the lock screen is not touched, and no app is removed. No performance effect.",
-      "notes": "LIVE STATE VERIFIED: SubscribedContent-338389Enabled = REG_DWORD 1. This id maps to the single Settings > System > Notifications checkbox, which is what makes it locally verifiable and therefore Measured. DROPPED FROM THE PROPOSED VERSION: the second op, SubscribedContent-LocksreenEnabled, was removed because it contradicted the lock-screen promise in bloat.contentdelivery-off, was not covered by this entry's title, and is inert on this box. Note for any future lock-screen entry that Locksreen is Microsoft's own misspelling and must be written exactly as spelled. Do NOT extend this entry with more hardcoded SubscribedContent-<id> values; the live id set on this build matches no published tweak list in either direction, so discovery must happen at runtime."
-    },
-    {
-      "id": "bloat.start-trackprogs-off",
-      "category": "debloat",
-      "title": "Stop the Start menu tracking your most-used apps",
-      "evidence": "Measured",
-      "impact": "Low",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-          "value": "Start_TrackProgs",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["ShChangeNotify"],
-      "whatItBreaks": "The Start menu stops recording which apps you launch, so the most-used list stops populating and Settings > Personalization > Start > Show most used apps will read Off. Pinned apps, recently added apps, search and jump lists all keep working. Nothing is uninstalled and no telemetry setting is touched. No performance effect. The shell is notified immediately, but the Start menu caches its own surfaces, so you may still need to sign out and back in before the most-used list clears.",
-      "notes": "LIVE STATE VERIFIED: Start_TrackProgs is ABSENT -- the value does not exist, and the behavioural default when absent is tracking ON. This op therefore CREATES the value, and revert MUST DELETE it rather than write 1. Writing 1 on revert would be wrong: 1 is the behavioural default but not the stored state, and it would leave the Settings toggle reading explicitly-on instead of default-on. Best absent-restore integration test in the debloat set. Reader confirmed by UTF-16 scan in shell32.dll, StartTileData.dll, AppResolver.dll, gpprefcl.dll and windowsudk.shellcommon.dll. activation ShChangeNotify: this is an Explorer\\Advanced value and SHCNE_ASSOCCHANGED is the shell's documented re-read broadcast, already implemented in Win32ActivationBroadcaster."
-    },
-    {
-      "id": "bloat.start-iris-recommendations-off",
-      "category": "debloat",
-      "title": "Turn off Start menu recommendations and app promotions",
-      "evidence": "Measured",
-      "impact": "Low",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22621,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-          "value": "Start_IrisRecommendations",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["ShChangeNotify"],
-      "whatItBreaks": "The Recommended section of the Start menu stops showing tips, shortcuts, app promotions and try-this cards. Your pinned apps and the All apps list are unaffected, and your recently opened files still appear -- that is a separate setting this entry deliberately does not touch. Nothing is uninstalled. No performance effect.",
-      "notes": "LIVE STATE VERIFIED: Start_IrisRecommendations = REG_DWORD 0, ALREADY LEAN on this machine, so this op is elided and the entry is a complete no-op on this box. It still matters on a fresh profile where the default is 1 -- do not use this entry as an apply/rollback integration test on this machine. Reader confirmed by UTF-16 scan in StartTileData.dll, Taskbar.dll, SystemSettings.DataModel.dll, SettingsEnvironment.Desktop.dll and AssignedAccessManager.dll. minBuild 22621 because this is the Win11 22H2+ Start surface and is inert on 22000. SPLIT: the proposed version bundled Start_TrackDocs into this entry; that op now lives in bloat.start-trackdocs-off."
-    },
-    {
-      "id": "bloat.start-trackdocs-off",
-      "category": "debloat",
-      "title": "Stop Windows recording your recently opened files",
-      "evidence": "Measured",
-      "impact": "Low",
-      "riskTier": 2,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-          "value": "Start_TrackDocs",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["ShChangeNotify"],
-      "whatItBreaks": "This removes a feature you may actually use. Windows stops recording the files you open, so recently opened files disappear from three places at once: the Recommended section of the Start menu, the right-click jump lists on taskbar and Start icons, and the Recent files list in File Explorer. Settings > Personalization > Start > Show recently opened items in Start, Jump Lists, and File Explorer will read Off. Your files are not touched or deleted -- only the shortcut history stops being recorded -- but existing history entries are cleared and do not come back when you revert; the list simply starts refilling from that point. If you routinely reopen documents from Start, the taskbar or File Explorer's Recent list, skip this one. No performance effect.",
-      "notes": "SPLIT OUT of the proposed bloat.start-iris-recommendations-off, which bundled it under a title about ad removal. LIVE STATE VERIFIED: Start_TrackDocs is ABSENT; behavioural default is ON. This op CREATES the value and revert MUST DELETE it, not write 1 -- same tri-state requirement as Start_TrackProgs. Reader confirmed by UTF-16 scan in shell32.dll, StartTileData.dll, Taskbar.dll, AssignedAccessManager.dll and gpprefcl.dll. riskTier 2 rather than 1: the registry write is trivially reversible, but the recent-items history it clears is not restored by reverting, so this is a change the user should think about rather than a benign toggle."
-    },
-    {
-      "id": "shell.disable-widgets-policy",
-      "category": "shell",
-      "title": "Disable Widgets entirely via policy",
-      "evidence": "Measured",
-      "impact": "Low",
-      "riskTier": 2,
-      "scope": "Persistent",
-      "requiresAdmin": true,
-      "requiresReboot": true,
-      "conflictsWith": [],
-      "minBuild": 22621,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKLM",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Policies\\Microsoft\\Dsh",
-          "value": "AllowNewsAndInterests",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["None"],
-      "whatItBreaks": "The Widgets board is gone: Win+W, the taskbar widgets button, and the weather, stocks and news feeds all stop working. Hiding the taskbar button is NOT the same thing - verified on this machine, where TaskbarDa is already 0 and Widgets.exe (60.4 MB) and WidgetService.exe (26.6 MB) are both still resident. Expect roughly 87 MB and two idle processes back; on 61.6 GB of RAM that is a tidiness win, not a performance one, and it will not change your frame rate. Takes effect at next sign-out or restart.",
-      "notes": "Dsh key confirmed absent (Test-Path False), so applying creates it. MERGE CORRECTION: the reviewed note claimed revert 'leaves an empty Dsh key, because Quiesce does not delete keys'. That is false in this codebase - TransactionEngine.RestorePrior on a KeyAbsent prior deletes the value and then calls Win32Registry.DeleteCreatedKeysIfEmpty, which walks the created chain deepest-first and removes each key that is still empty, stopping at the first key someone else has written into. Revert therefore leaves no Dsh residue in the normal case. Does NOT cover lock-screen widgets - that is a separate Dsh value (DisableWidgetsOnLockScreen), not authored here. MicrosoftWindows.Client.WebExperience 526.17301.40.0 and Microsoft.WidgetsPlatformRuntime 1.6.19.0 are installed; this policy blocks them rather than removing them, which is the reversible choice. The UI must never present this and shell.hide-widgets-button as one toggle."
-    },
-    {
-      "id": "shell.hide-widgets-button",
-      "category": "shell",
-      "title": "Hide the Widgets button on the taskbar",
-      "evidence": "Cosmetic",
-      "impact": "None",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22621,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-          "value": "TaskbarDa",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["ShChangeNotify"],
-      "whatItBreaks": "Nothing. The widgets button disappears from the taskbar; Win+W still opens the board. This does NOT stop the Widgets background processes - verified on this machine, where TaskbarDa is already 0 and both Widgets.exe and WidgetService.exe are still running. Use the widgets policy entry if you want the processes gone. Explorer may need restarting for the taskbar to redraw.",
-      "notes": "Confirmed REG_DWORD 0x0 already, so Quiesce will elide this as already lean. The UI must never present this and shell.disable-widgets-policy as one toggle. MERGE: subkey case normalized to SOFTWARE to match the rest of the file; the registry is case-insensitive and the target is unchanged."
-    },
-    {
-      "id": "shell.hide-taskbar-search",
-      "category": "shell",
-      "title": "Hide the taskbar search box",
-      "evidence": "Cosmetic",
-      "impact": "None",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Search",
-          "value": "SearchboxTaskbarMode",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["ShChangeNotify"],
-      "whatItBreaks": "The search box disappears from the taskbar, reclaiming that strip of space. Search still works - press Win, or Win+S, and type. This buys you no background work: SearchHost.exe stays resident either way (165.5 MB on this machine right now, with the box visible). Explorer must be restarted for the taskbar to redraw, and Quiesce will not do that for you in v1.",
-      "notes": "Confirmed REG_DWORD 0x2 (full search box). 0 = hidden, 1 = icon only, 2 = box, 3 = box with label. Use 1 for an icon-only middle ground. Sibling SearchboxTaskbarModeCache reads 0x1 while the live value reads 0x2 - they disagree, so test a write across a sign-out before trusting this entry."
-    },
-    {
-      "id": "shell.disable-start-web-search",
-      "category": "shell",
-      "title": "Stop Start menu search from querying the web",
-      "evidence": "Situational",
-      "impact": "Low",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": true,
-      "requiresReboot": true,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",
-          "value": "DisableSearchBoxSuggestions",
-          "expectedKind": "DWord",
-          "leanData": 1
-        }
-      ],
-      "activation": ["None"],
-      "whatItBreaks": "Start menu search stops returning Bing web results and web suggestions. Local apps, settings and files still search normally. Anyone who uses Start as a web search bar loses that habit. Typing in Start no longer makes a network round-trip, which plausibly means local results settle sooner - that has NOT been measured here, so treat it as a privacy and clutter change, not a performance one. Takes effect at next sign-out.",
-      "notes": "HKCU Policies\\Explorer key confirmed absent (parent CurrentVersion\\Policies exists); applying creates the subkey. MERGE CORRECTION: the reviewed note said revert 'leaves it behind empty'. The engine deletes created keys that are still empty on revert - see the correction on shell.disable-widgets-policy. This is the setting still honoured on 24H2/25H2. Microsoft.BingSearch 1.1.43.0 is installed, so there is a live web provider for this to block. No broadcast makes SearchHost re-read it, hence activation None and requiresReboot true."
-    },
-    {
-      "id": "shell.menu-show-delay",
-      "category": "shell",
-      "title": "Remove the cascading menu open delay",
-      "evidence": "Measured",
-      "impact": "Low",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "Control Panel\\Desktop",
-          "value": "MenuShowDelay",
-          "expectedKind": "String",
-          "leanData": "0"
-        }
-      ],
-      "activation": ["WmSettingChange"],
-      "whatItBreaks": "Cascading menus open the instant the pointer touches them instead of after 400 ms. The tradeoff is real: submenus will flick open when you merely drag the mouse across a parent item, which some people find twitchy. Zero effect on frame rate or game performance - this is UI feel only. It also mostly affects classic Win32 menus, not the XAML Start menu and context menus Windows 11 uses by default, so the win is smaller than tweak guides imply.",
-      "notes": "REG_SZ, NOT DWord - confirmed live as REG_SZ 400. A DWord write to this target silently no-ops. Substitute leanData \"20\" if instant flyout proves annoying. WM_SETTINGCHANGE does not refresh USER32's cached value in already-running processes; newly launched apps pick it up, everything else needs a restart or sign-out. The documented activation is SystemParametersInfo(SPI_SETMENUSHOWDELAY), which the activation enum cannot express."
-    },
-    {
-      "id": "shell.disable-taskbar-animations",
-      "category": "shell",
-      "title": "Turn off taskbar animations",
-      "evidence": "Cosmetic",
-      "impact": "None",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-          "value": "TaskbarAnimations",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["ShChangeNotify", "WmSettingChange"],
-      "whatItBreaks": "Taskbar animations stop playing - button slides, thumbnail fades and jump-list transitions snap instead. This value covers the TASKBAR only; window minimise and maximise animations are a different setting (see shell.disable-window-min-animations). Nothing functional is lost and there is no frame-rate or input-latency benefit in games. Explorer must be restarted before the change is fully visible, and Quiesce will not restart Explorer for you in v1.",
-      "notes": "Confirmed REG_DWORD 0x1 (stock). Mirrors part of the Show animations in Windows checkbox under Performance Options; the checkbox drives several values, this is one of them."
-    },
-    {
-      "id": "shell.disable-window-min-animations",
-      "category": "shell",
-      "title": "Turn off window minimise and maximise animations",
-      "evidence": "Cosmetic",
-      "impact": "None",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "Control Panel\\Desktop\\WindowMetrics",
-          "value": "MinAnimate",
-          "expectedKind": "String",
-          "leanData": "0"
-        }
-      ],
-      "activation": ["WmSettingChange"],
-      "whatItBreaks": "Windows snap open and closed instead of sliding when you minimise or maximise them. Nothing functional is lost, and the transition feels marginally more immediate because you no longer wait out the animation. No frame-rate or input-latency benefit in games whatsoever. May need a sign-out before every surface honours it.",
-      "notes": "REG_SZ TRAP - confirmed live as REG_SZ 1, NOT a DWord. A DWord write here silently no-ops. Added by review because shell.disable-taskbar-animations falsely claimed to cover window minimise/maximise animations; TaskbarAnimations does not touch them, this value does. The documented activation is SystemParametersInfo(SPI_SETANIMATION), which the activation enum cannot express."
-    },
-    {
-      "id": "shell.disable-listview-alpha-select",
-      "category": "shell",
-      "title": "Use a plain File Explorer selection rectangle",
-      "evidence": "Cosmetic",
-      "impact": "None",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-          "value": "ListviewAlphaSelect",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["ShChangeNotify"],
-      "whatItBreaks": "Nothing. The translucent rubber-band rectangle you drag to select files in File Explorer becomes a plain outline. Purely visual, with no measurable performance difference on any modern GPU and certainly none on an RTX 3090. Explorer restart needed before it shows.",
-      "notes": "Confirmed REG_DWORD 0x1 (stock). Placebo on this hardware; listed so the user sees it labelled as such rather than finding it in a tweak guide presented as a speedup. Siblings ListviewShadow (1) and IconsOnly (0) deliberately not authored."
-    },
-    {
-      "id": "gaming.gamedvr-capture-off",
-      "category": "gaming",
-      "title": "Turn off Game Bar background recording",
-      "evidence": "Situational",
-      "impact": "Low",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "System\\GameConfigStore",
-          "value": "GameDVR_Enabled",
-          "expectedKind": "DWord",
-          "leanData": 0
-        },
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR",
-          "value": "AppCaptureEnabled",
-          "expectedKind": "DWord",
-          "leanData": 0
-        },
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR",
-          "value": "HistoricalCaptureEnabled",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["None"],
-      "whatItBreaks": "Win+G Game Bar capture stops working for your user account: no manual clips, no Game Bar screenshots, and the 'Record what happened' background buffer stays off. Game Bar still opens, and its widgets, performance overlay and audio mixer are unaffected. Third-party capture is untouched: OBS, NVIDIA App / ShadowPlay, Steam and Discord all keep recording normally. Other user accounts on this PC are not affected. You may need to close and reopen Game Bar, or sign out and back in, before it stops offering capture. Nothing else breaks.",
-      "notes": "Evidence is Situational, NOT Measured. Stopping a running background hardware encode is a real and measurable frame-time win, but that win only exists on a machine where the ring buffer is actually running - and on this one it is not. Verified live via RegistryKey.GetValueKind: GameDVR_Enabled=DWord 1, AppCaptureEnabled=DWord 1, HistoricalCaptureEnabled=DWord 0 ALREADY. Quiesce will elide the third op as 'already lean'. Expect zero FPS change here; what this buys is that manual capture cannot be triggered accidentally mid-game and a slightly smaller idle footprint. The UI must not headline this as a performance feature on this machine. All three ops are HKCU, so this needs no admin and is trivially reversible: restore rewrites 1 / 1 / 0. Xbox Game Bar rewrites these values whenever its capture settings page is opened; if you want the change to survive that, apply gaming.gamedvr-policy-lock as well and read its warnings first."
-    },
-    {
-      "id": "gaming.gamedvr-policy-lock",
-      "category": "gaming",
-      "title": "Lock Game Bar recording off with a machine-wide policy",
-      "evidence": "Situational",
-      "impact": "Low",
-      "riskTier": 3,
-      "scope": "Persistent",
-      "requiresAdmin": true,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKLM",
-          "view": "Registry64",
-          "subkey": "SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR",
-          "value": "AllowGameDVR",
-          "expectedKind": "DWord",
-          "leanData": 0
-        }
-      ],
-      "activation": ["None"],
-      "whatItBreaks": "This writes a Group Policy value, so it does more than flip a setting. Game recording and broadcasting is disabled for EVERY user account on this PC, not just yours. Windows Settings > Gaming > Captures will show its controls greyed out with a 'Some of these settings are managed by your organization' notice - that notice is caused by this entry, not by real IT management, and it will confuse anyone who later looks at this machine. Restoring deletes the value and then removes the GameDVR policy key Quiesce created, as long as nothing else has written into it in the meantime; if something has, the key stays and the other party's values are left alone. Third-party capture is untouched: OBS, NVIDIA App / ShadowPlay, Steam and Discord keep recording normally.",
-      "notes": "Split out of gaming.gamedvr-capture-off. It is the sole reason that entry would have required admin, and bundling made the transaction all-or-nothing: an unelevated run would have got none of the HKCU wins instead of all of them. This is a durability mechanism, not a performance one - it exists only to stop Xbox Game Bar rewriting the HKCU values when its capture settings page is opened. Ship OFF and never pre-selected. MERGE CORRECTION 1: the submitted entry listed the SAME op twice (two identical AllowGameDVR writes). TransactionEngine.Plan does not de-duplicate targets, so that would have produced two planned steps, two journal rows and two writes for one value. The duplicate is removed. MERGE CORRECTION 2: the tier-3 rationale and the whatItBreaks text both claimed Quiesce can never remove the policy key it creates. That is false - RestorePrior calls DeleteCreatedKeysIfEmpty for a KeyAbsent prior. Tier 3 is retained on the two legs that survive: the change is machine-wide across every account, and it fabricates a managed-by-your-organization state on an unmanaged WORKGROUP PC. Verified live: the GameDVR subkey does NOT exist under HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows, a recursive /f GameDVR search returned 0 matches, and HKLM\\SOFTWARE\\WOW6432Node\\Policies\\Microsoft\\Windows\\GameDVR does not exist either. CAUTION: expectedKind DWord comes from Microsoft policy documentation, not from observation, because the target is absent. This is the only unverified kind in the whole catalog. Because the value does not exist, the loader's kind check cannot protect it - if the documentation is wrong the write silently no-ops and Quiesce reports success. Isolating it here means that failure mode cannot poison the three HKCU ops."
-    },
-    {
-      "id": "gaming.mouse-acceleration-off",
-      "category": "gaming",
-      "title": "Turn off mouse acceleration for a 1:1 pointer",
-      "evidence": "Measured",
-      "impact": "Medium",
-      "riskTier": 1,
-      "scope": "Persistent",
-      "requiresAdmin": false,
-      "requiresReboot": false,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "Control Panel\\Mouse",
-          "value": "MouseSpeed",
-          "expectedKind": "String",
-          "leanData": "0"
-        },
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "Control Panel\\Mouse",
-          "value": "MouseThreshold1",
-          "expectedKind": "String",
-          "leanData": "0"
-        },
-        {
-          "kind": "registry",
-          "hive": "HKCU",
-          "view": "Registry64",
-          "subkey": "Control Panel\\Mouse",
-          "value": "MouseThreshold2",
-          "expectedKind": "String",
-          "leanData": "0"
-        }
-      ],
-      "activation": ["SpiSetMouse"],
-      "whatItBreaks": "Nothing breaks. The pointer becomes 1:1 with the mouse: the same physical movement always travels the same number of pixels, no matter how fast you flick. If you are used to Windows' 'Enhance pointer precision', the desktop will feel slower at first and you may want to raise your mouse DPI to compensate. This changes zero frames - it is an input-feel change only.",
-      "notes": "Benefit is input consistency and aim repeatability - NOT frames and NOT frame-time. The UI must not imply a performance gain. All three values are REG_SZ on this machine, confirmed live through RegistryKey.GetValueKind (not reg query formatting): MouseSpeed='1', MouseThreshold1='6', MouseThreshold2='10', which is Windows' stock acceleration-on state. Writing DWord 0 to these is the classic silent no-op; the loader's kind check catches it, but the trap is real. Activation MUST be SpiSetMouse (SystemParametersInfo SPI_SETMOUSE) - the registry write alone never reaches the running input stack, so without the broadcast the change appears to do nothing until logoff, and revert would leave the session on the tweaked curve. Note the honest ceiling: games using RawInput/DirectInput already bypass this curve entirely, so the win lands on the desktop and in engines that read the Windows pointer path."
-    },
-    {
-      "id": "gaming.hags-experiment",
-      "category": "gaming",
-      "title": "Hardware-accelerated GPU scheduling (A/B experiment)",
-      "evidence": "AB",
-      "impact": "Low",
-      "riskTier": 2,
-      "scope": "Persistent",
-      "requiresAdmin": true,
-      "requiresReboot": true,
-      "conflictsWith": [],
-      "minBuild": 22000,
-      "ops": [
-        {
-          "kind": "registry",
-          "hive": "HKLM",
-          "view": "Registry64",
-          "subkey": "SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers",
-          "value": "HwSchMode",
-          "expectedKind": "DWord",
-          "leanData": 2
-        }
-      ],
-      "activation": ["None"],
-      "whatItBreaks": "This is a coin flip, not an optimization, and it is the riskiest entry in this category. It needs a reboot to take effect and a second reboot to undo, so trying it costs two restarts. On some GPU and driver combinations HAGS removes a little render-queue latency; on others it introduces stutter, degrades or breaks overlay and capture tools such as OBS, Discord and the NVIDIA App, and changes how frame-pacing and latency features behave. There are credible reports of display-driver resets or a black screen after enabling it on particular driver revisions; if that happens, restore this entry and reboot, using safe mode if the desktop will not come up. Nothing is permanently damaged either way - the setting is a single value and restoring it puts the driver back exactly as it was.",
-      "notes": "Evidence is AB on purpose: hardware-dependent, ships OFF, presented as an experiment and never as an optimization. Live here: HwSchMode = REG_DWORD 1 (off), kind confirmed via GetValueKind on a Registry64 base key; 2 = on. HwSchState is ABSENT, meaning the toggle has not been moved since driver install. Quiesce writes only HwSchMode and must NOT synthesise HwSchState - the OS and driver own it. Specific to this box: an RTX 3090 driving a 4K60 panel is GPU-bound against a 60 Hz ceiling, so any HAGS delta will almost certainly sit inside run-to-run noise - compare 1% lows across several runs before believing either direction, and do not trust average FPS. If the GPU driver does not support HAGS, writing 2 is ignored and nothing happens; that is a no-op, not a success, and the UI should not claim otherwise. Scope MUST stay Persistent because this requires a reboot: a Session-scoped reboot-requiring entry would be auto-reverted by boot recovery before it ever took effect."
-    }
-  ]
+    "schemaVersion":  1,
+    "catalogVersion":  "0.4.0",
+    "entries":  [
+                    {
+                        "id":  "privacy.diagnostic-data-off",
+                        "category":  "privacy",
+                        "title":  "Turn off Windows diagnostic data",
+                        "evidence":  "Situational",
+                        "impact":  "None",
+                        "riskTier":  2,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKLM",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection",
+                                        "value":  "AllowTelemetry",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Settings \u003e Privacy \u0026 security \u003e Diagnostics \u0026 feedback becomes read-only and shows \u0027Some of these settings are managed by your organization\u0027. Blocks enrolling in the Windows Insider Program, which requires optional diagnostic data. Windows Update still finds and installs updates normally, but update-failure diagnostics stop being sent, so Microsoft cannot see problems specific to this PC. The Diagnostic Data Viewer and Recommended Troubleshooting stop returning data. This does NOT stop the DiagTrack service, which keeps running and keeps sending the Required set on editions that coerce the value. EDITION CAVEAT: level 0 is only honored on Enterprise, Education and Server. On Home and Pro the registry write succeeds and Quiesce will report success, but Windows silently treats it as 1 (Required) - you get the managed banner and no further reduction. This machine is Enterprise, so 0 genuinely applies here.",
+                        "notes":  "Valid values are 0/1/3 only, confirmed against C:\\Windows\\PolicyDefinitions\\DataCollection.admx on this box (policy class=Both, key=Software\\Policies\\Microsoft\\Windows\\DataCollection, enum items 0/1/3); level 2 (Enhanced) was removed from the schema. This GP path overrides the machine\u0027s current effective setting at HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\DataCollection\\AllowTelemetry, which reads REG_DWORD 3 here; deleting this policy value on revert returns the PC to 3. Verified: the target key exists with zero values and zero subkeys, so apply writes into an existing key and revert leaves it exactly as found. Evidence is Situational, not Measured, precisely because the effect is edition-conditional - see whatItBreaks. MERGE: shares the DataCollection policy key with privacy.feedback-frequency-never; the key already exists, so neither entry creates it and there is no shared created-key chain to double-delete on revert."
+                    },
+                    {
+                        "id":  "privacy.advertising-id-off",
+                        "category":  "privacy",
+                        "title":  "Turn off the per-user advertising ID",
+                        "evidence":  "Measured",
+                        "impact":  "None",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo",
+                                        "value":  "Enabled",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Nothing. Apps can still display ads; they simply can no longer read a stable per-user identifier to personalize those ads or correlate you across apps. The Settings \u003e Privacy \u0026 security \u003e General toggle flips off to match.",
+                        "notes":  "Verified live as REG_DWORD 0 on this machine, so Quiesce will elide this row as \u0027already lean\u0027. Kept in the catalog because it is 1 by default on most fresh installs and on other user profiles. This is the per-user ID only; it does not block ad delivery. Passed through from the proposal unchanged - no defects found."
+                    },
+                    {
+                        "id":  "privacy.tailored-experiences-off",
+                        "category":  "privacy",
+                        "title":  "Stop using diagnostic data for tailored experiences",
+                        "evidence":  "Measured",
+                        "impact":  "None",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Privacy",
+                                        "value":  "TailoredExperiencesWithDiagnosticDataEnabled",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Nothing functional. Windows stops mining your diagnostic data to personalize the tips, suggestions, and promotional content it shows in Start, Settings, the lock screen, and the welcome experience. Those surfaces still appear; the content is just generic instead of targeted at you.",
+                        "notes":  "Verified live as REG_DWORD 1 here, so this is a real change and the kind is confirmed - no type trap. This is a per-user consent flag and is independent of privacy.diagnostic-data-off; setting AllowTelemetry to 0 does not clear it. Siblings in the same key, left untouched and confirmed present: PrivacyConsentPresentationVersion=2, PrivacyConsentSettingsVersion=5, PrivacyConsentSettingsValidMask=0x2f. MERGE: adjacent to bloat.contentdelivery-off - this one makes the suggestion content generic, that one stops the suggestion surfaces appearing. They target different values and do not collide; applying both is the coherent combination."
+                    },
+                    {
+                        "id":  "privacy.feedback-frequency-never",
+                        "category":  "privacy",
+                        "title":  "Stop Windows asking for feedback",
+                        "evidence":  "Cosmetic",
+                        "impact":  "None",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKLM",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection",
+                                        "value":  "DoNotShowFeedbackNotifications",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  1
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Nothing. Windows stops spontaneously prompting you to rate features or answer survey popups. You can still open Feedback Hub and submit feedback yourself whenever you want. Settings \u003e Privacy \u0026 security \u003e Diagnostics \u0026 feedback shows the feedback-frequency control as managed by your organization. Be honest about what this is: it suppresses a nag. It does not reduce any data flow, so do not read it as a privacy win.",
+                        "notes":  "REPLACED the proposed HKCU\\SOFTWARE\\Microsoft\\Siuf\\Rules!NumberOfSIUFInPeriod op with the documented ADMX policy. Confirmed on this box in C:\\Windows\\PolicyDefinitions\\FeedbackNotifications.admx: policy DoNotShowFeedbackNotifications, class=Machine, key=Software\\Policies\\Microsoft\\Windows\\DataCollection, valueName=DoNotShowFeedbackNotifications, enabledValue decimal 1 (an ADMX decimal is written as REG_DWORD, so the kind is declared rather than guessed). Note the inverted polarity versus the Siuf approach: lean here is 1, not 0. The target key exists and is empty (verified), so apply writes one value into an existing key and revert deletes it with zero residue. The Siuf\\Rules subkey genuinely does not exist on this build (parent Siuf has only Staging and State), which is exactly why its value kind could not be confirmed - authoring an unverifiable kind is the silent-no-op failure mode this catalog exists to avoid. Cost of the swap: requiresAdmin becomes true and Settings gains an org-managed banner."
+                    },
+                    {
+                        "id":  "privacy.activity-history-off",
+                        "category":  "privacy",
+                        "title":  "Stop recording and uploading activity history",
+                        "evidence":  "Situational",
+                        "impact":  "None",
+                        "riskTier":  2,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKLM",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+                                        "value":  "PublishUserActivities",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    },
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKLM",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+                                        "value":  "UploadUserActivities",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Settings \u003e Privacy \u0026 security \u003e Activity history becomes read-only with an organization-managed banner. Windows stops writing which apps and documents you open into the local activity store, so anything that offers \u0027pick up where you left off\u0027 from that store loses its history. Sign out and back in for it to take full effect; until then the running session may keep publishing. Activities already cached are not deleted - clear them from the Settings page if that matters. On Windows 11 this is largely vestigial: Task View\u0027s Timeline UI was removed and Microsoft discontinued cloud sync of activity history in 2021, so in practice you will likely notice nothing.",
+                        "notes":  "Verified: both values absent, parent key exists with zero values and zero subkeys, so apply writes two values into an existing key and revert deletes them with zero residue. Absent means enabled by default. Key path, value names and 0/1 semantics confirmed against C:\\Windows\\PolicyDefinitions\\OSPolicy.admx on this box (both policies class=Machine, key=Software\\Policies\\Microsoft\\Windows\\System, disabledValue decimal 0). Evidence is Situational rather than Measured because the policy is documented and does apply, but how much this feature still collects on 25H2 after Timeline\u0027s removal is not verifiable locally. EnableActivityFeed is the related third policy and is deliberately not authored - see the exclusions list. requiresReboot left false because the registry change itself needs no reboot; the sign-out caveat is stated in whatItBreaks rather than forcing a reboot prompt."
+                    },
+                    {
+                        "id":  "privacy.inking-typing-personalization-off",
+                        "category":  "privacy",
+                        "title":  "Turn off inking and typing personalization",
+                        "evidence":  "Measured",
+                        "impact":  "None",
+                        "riskTier":  2,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Personalization\\Settings",
+                                        "value":  "AcceptedPrivacyPolicy",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    },
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\InputPersonalization",
+                                        "value":  "RestrictImplicitTextCollection",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  1
+                                    },
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\InputPersonalization",
+                                        "value":  "RestrictImplicitInkCollection",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  1
+                                    },
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\InputPersonalization\\TrainedDataStore",
+                                        "value":  "HarvestContacts",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Windows stops adding the words you type and the ink you write to your personal recognition dictionary, and stops harvesting names from your contacts into it. Autocorrect, text suggestions, and handwriting recognition keep working from the shipped language model but stop learning your names, jargon, and slang, and stop suggesting contact names. Words already learned are not deleted; clear them from Settings if you want them gone. Turning AcceptedPrivacyPolicy back to 0 can make Windows re-show the inking and typing consent prompt the next time you open that Settings page. On a desktop with a hardware keyboard the practical effect is small - this matters most for the touch keyboard, voice typing, and pen input.",
+                        "notes":  "All four values verified present with kind REG_DWORD on this machine, so there is no type ambiguity anywhere in this entry. Note the polarity difference: AcceptedPrivacyPolicy and HarvestContacts are lean at 0 while the two Restrict* values are lean at 1. Getting that backwards would leave collection fully on while appearing applied. Live state: AcceptedPrivacyPolicy=1, RestrictImplicitTextCollection=0, RestrictImplicitInkCollection=0, HarvestContacts=1 - personalization is currently fully ON. HarvestContacts was ADDED as a fourth op because the entry\u0027s title promised to turn off typing personalization while leaving contact harvesting into the same TrainedDataStore switched on. Tier 2 rather than 1 because there is genuine ongoing functional degradation, even though the change is trivially reversible and needs no admin. Siblings left untouched: TextHarvestingInstallationStatus=6, DisablePersInternal=0, MaximumInkStoreSize=0xc350."
+                    },
+                    {
+                        "id":  "bloat.consumer-features-off",
+                        "category":  "debloat",
+                        "title":  "Turn off Microsoft consumer experiences",
+                        "evidence":  "Situational",
+                        "impact":  "Medium",
+                        "riskTier":  2,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKLM",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent",
+                                        "value":  "DisableWindowsConsumerFeatures",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  1
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Windows stops silently installing promoted third-party apps (Candy Crush, Spotify, TikTok and similar) into your Start menu, and stops cloud-driven app suggestions. On some builds this also freezes the Windows Spotlight lock-screen image rotation, so your lock screen may stop changing daily -- if you like the rotating photos, skip this one. It does not uninstall apps that are already there, and it does not affect the Microsoft Store, Windows Update, or anything you installed yourself. It has no performance effect. This is a machine-wide policy value: nothing broadcasts it to the running session, so expect it to take effect at your next sign-in rather than immediately.",
+                        "notes":  "LIVE STATE VERIFIED: the entire CloudContent policy key is ABSENT under both HKLM and HKCU, so this op creates the key plus the value. MERGE CORRECTION: the reviewed note said \u0027revert must delete the VALUE only -- do not delete the key, we have no tree snapshot\u0027. That is wrong about this codebase. Win32Registry.SetValue captures the missing-key chain BEFORE CreateSubKey, and TransactionEngine.RestorePrior deletes the value and then calls DeleteCreatedKeysIfEmpty, which removes only keys Quiesce created and only while they are still empty. Revert therefore leaves no CloudContent residue unless something else has written into the key first. ADMX VERIFIED by parsing this build\u0027s own C:\\Windows\\PolicyDefinitions\\CloudContent.admx: class=Machine, key=Software\\Policies\\Microsoft\\Windows\\CloudContent, valueName=DisableWindowsConsumerFeatures, enabledValue decimal 1, disabledValue decimal 0, supportedOn=SUPPORTED_Windows_10_0_NOSERVER. Reader confirmed by UTF-16 string scan in ContentDeliveryManager.Utilities.dll, SettingsHandlers_ContentDeliveryManager.dll, cdpusersvc.dll and CustomShellHost.exe. EditionID=Enterprise here, so the Enterprise/Education-only gating does not bite. Evidence is Situational, not Measured: Microsoft migrated coverage to DisableCloudOptimizedContent and DisableConsumerAccountStateContent (both present in this same ADMX), so coverage on build 26200 is partial. Do not gate on ProductName, which still reads Windows 10 Enterprise here. MERGE: interacts with bloat.contentdelivery-off on the lock screen - see that entry\u0027s whatItBreaks."
+                    },
+                    {
+                        "id":  "bloat.contentdelivery-off",
+                        "category":  "debloat",
+                        "title":  "Turn off Content Delivery Manager suggestions and silent app installs",
+                        "evidence":  "Situational",
+                        "impact":  "Low",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+                                        "value":  "SilentInstalledAppsEnabled",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    },
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+                                        "value":  "PreInstalledAppsEnabled",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    },
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+                                        "value":  "OemPreInstalledAppsEnabled",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    },
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+                                        "value":  "SystemPaneSuggestionsEnabled",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    },
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+                                        "value":  "SoftLandingEnabled",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    },
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+                                        "value":  "RotatingLockScreenOverlayEnabled",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    },
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+                                        "value":  "FeatureManagementEnabled",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "ShChangeNotify"
+                                       ],
+                        "whatItBreaks":  "Settings stops showing suggested-content banners, the lock screen stops overlaying Spotlight tips and fun facts on top of the image, Windows stops showing tip popups after updates, and Windows stops silently installing promoted apps into your Start menu. As far as this entry is concerned the lock screen photo itself still rotates -- that is RotatingLockScreenEnabled, which none of these ops touch. Be aware that bloat.consumer-features-off can freeze Spotlight rotation on some builds, so if you apply that entry too, the photo may stop changing. Nothing you installed is removed, no Microsoft Store functionality is lost, and no service or system component is disabled. This is a clutter and privacy change with zero effect on frame rate. Content Delivery Manager caches aggressively, so suggestion surfaces already on screen and app installs already queued may persist until your next sign-in.",
+                        "notes":  "LIVE STATE VERIFIED, all REG_DWORD: SilentInstalledAppsEnabled=1, PreInstalledAppsEnabled=1, OemPreInstalledAppsEnabled=1, SystemPaneSuggestionsEnabled=1, SoftLandingEnabled=1, RotatingLockScreenOverlayEnabled=1, FeatureManagementEnabled=0 (ALREADY LEAN -- op 7 elided on this box, so 6 of 7 ops execute here). All seven exist with matching DWord kind, so there is no silent-no-op risk. Reader confirmed by direct UTF-16 scan: FeatureManagementEnabled and SystemPaneSuggestionsEnabled in ContentDeliveryManager.Background.dll; SoftLandingEnabled in SettingsHandlers_nt.dll, twinui.dll, SettingsEnvironment.Desktop.dll; RotatingLockScreenOverlayEnabled in ContentDeliveryManager.Utilities.dll, SettingsHandlers_nt.dll, Windows.UI.Immersive.dll; PreInstalledAppsEnabled in StartTileData.dll, twinui.pcshell.dll, RDXTaskFactory.dll. SilentInstalledAppsEnabled and OemPreInstalledAppsEnabled have no literal reader under C:\\Windows, but CDM composes some value names at runtime so that is a weak negative, not proof; kept because they are canonical, correctly typed and trivially reversible, which is also why this entry is Situational rather than Measured. activation is ShChangeNotify to match the already-shipped catalog/tweaks.json row for this same id. MERGE: this id already ships at catalogVersion 0.1.0 with ONE op and a different title; this row supersedes it with seven."
+                    },
+                    {
+                        "id":  "bloat.tips-and-suggestions-off",
+                        "category":  "debloat",
+                        "title":  "Turn off Windows tips, tricks and suggestion notifications",
+                        "evidence":  "Measured",
+                        "impact":  "Low",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+                                        "value":  "SubscribedContent-338389Enabled",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "ShChangeNotify"
+                                       ],
+                        "whatItBreaks":  "Windows stops showing tip, trick and suggestion notifications and the occasional post-update welcome tour. Settings \u003e System \u003e Notifications \u003e Get tips and suggestions when using Windows will read Off. Nothing else changes: notifications from your own apps, security alerts and Windows Update notifications are all unaffected, the lock screen is not touched, and no app is removed. No performance effect.",
+                        "notes":  "LIVE STATE VERIFIED: SubscribedContent-338389Enabled = REG_DWORD 1. This id maps to the single Settings \u003e System \u003e Notifications checkbox, which is what makes it locally verifiable and therefore Measured. DROPPED FROM THE PROPOSED VERSION: the second op, SubscribedContent-LocksreenEnabled, was removed because it contradicted the lock-screen promise in bloat.contentdelivery-off, was not covered by this entry\u0027s title, and is inert on this box. Note for any future lock-screen entry that Locksreen is Microsoft\u0027s own misspelling and must be written exactly as spelled. Do NOT extend this entry with more hardcoded SubscribedContent-\u003cid\u003e values; the live id set on this build matches no published tweak list in either direction, so discovery must happen at runtime."
+                    },
+                    {
+                        "id":  "bloat.start-trackprogs-off",
+                        "category":  "debloat",
+                        "title":  "Stop the Start menu tracking your most-used apps",
+                        "evidence":  "Measured",
+                        "impact":  "Low",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                        "value":  "Start_TrackProgs",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "ShChangeNotify"
+                                       ],
+                        "whatItBreaks":  "The Start menu stops recording which apps you launch, so the most-used list stops populating and Settings \u003e Personalization \u003e Start \u003e Show most used apps will read Off. Pinned apps, recently added apps, search and jump lists all keep working. Nothing is uninstalled and no telemetry setting is touched. No performance effect. The shell is notified immediately, but the Start menu caches its own surfaces, so you may still need to sign out and back in before the most-used list clears.",
+                        "notes":  "LIVE STATE VERIFIED: Start_TrackProgs is ABSENT -- the value does not exist, and the behavioural default when absent is tracking ON. This op therefore CREATES the value, and revert MUST DELETE it rather than write 1. Writing 1 on revert would be wrong: 1 is the behavioural default but not the stored state, and it would leave the Settings toggle reading explicitly-on instead of default-on. Best absent-restore integration test in the debloat set. Reader confirmed by UTF-16 scan in shell32.dll, StartTileData.dll, AppResolver.dll, gpprefcl.dll and windowsudk.shellcommon.dll. activation ShChangeNotify: this is an Explorer\\Advanced value and SHCNE_ASSOCCHANGED is the shell\u0027s documented re-read broadcast, already implemented in Win32ActivationBroadcaster."
+                    },
+                    {
+                        "id":  "bloat.start-iris-recommendations-off",
+                        "category":  "debloat",
+                        "title":  "Turn off Start menu recommendations and app promotions",
+                        "evidence":  "Measured",
+                        "impact":  "Low",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22621,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                        "value":  "Start_IrisRecommendations",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "ShChangeNotify"
+                                       ],
+                        "whatItBreaks":  "The Recommended section of the Start menu stops showing tips, shortcuts, app promotions and try-this cards. Your pinned apps and the All apps list are unaffected, and your recently opened files still appear -- that is a separate setting this entry deliberately does not touch. Nothing is uninstalled. No performance effect.",
+                        "notes":  "LIVE STATE VERIFIED: Start_IrisRecommendations = REG_DWORD 0, ALREADY LEAN on this machine, so this op is elided and the entry is a complete no-op on this box. It still matters on a fresh profile where the default is 1 -- do not use this entry as an apply/rollback integration test on this machine. Reader confirmed by UTF-16 scan in StartTileData.dll, Taskbar.dll, SystemSettings.DataModel.dll, SettingsEnvironment.Desktop.dll and AssignedAccessManager.dll. minBuild 22621 because this is the Win11 22H2+ Start surface and is inert on 22000. SPLIT: the proposed version bundled Start_TrackDocs into this entry; that op now lives in bloat.start-trackdocs-off."
+                    },
+                    {
+                        "id":  "bloat.start-trackdocs-off",
+                        "category":  "debloat",
+                        "title":  "Stop Windows recording your recently opened files",
+                        "evidence":  "Measured",
+                        "impact":  "Low",
+                        "riskTier":  2,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                        "value":  "Start_TrackDocs",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "ShChangeNotify"
+                                       ],
+                        "whatItBreaks":  "This removes a feature you may actually use. Windows stops recording the files you open, so recently opened files disappear from three places at once: the Recommended section of the Start menu, the right-click jump lists on taskbar and Start icons, and the Recent files list in File Explorer. Settings \u003e Personalization \u003e Start \u003e Show recently opened items in Start, Jump Lists, and File Explorer will read Off. Your files are not touched or deleted -- only the shortcut history stops being recorded -- but existing history entries are cleared and do not come back when you revert; the list simply starts refilling from that point. If you routinely reopen documents from Start, the taskbar or File Explorer\u0027s Recent list, skip this one. No performance effect.",
+                        "notes":  "SPLIT OUT of the proposed bloat.start-iris-recommendations-off, which bundled it under a title about ad removal. LIVE STATE VERIFIED: Start_TrackDocs is ABSENT; behavioural default is ON. This op CREATES the value and revert MUST DELETE it, not write 1 -- same tri-state requirement as Start_TrackProgs. Reader confirmed by UTF-16 scan in shell32.dll, StartTileData.dll, Taskbar.dll, AssignedAccessManager.dll and gpprefcl.dll. riskTier 2 rather than 1: the registry write is trivially reversible, but the recent-items history it clears is not restored by reverting, so this is a change the user should think about rather than a benign toggle."
+                    },
+                    {
+                        "id":  "shell.disable-widgets-policy",
+                        "category":  "shell",
+                        "title":  "Disable Widgets entirely via policy",
+                        "evidence":  "Measured",
+                        "impact":  "Low",
+                        "riskTier":  2,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  true,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22621,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKLM",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Policies\\Microsoft\\Dsh",
+                                        "value":  "AllowNewsAndInterests",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "The Widgets board is gone: Win+W, the taskbar widgets button, and the weather, stocks and news feeds all stop working. Hiding the taskbar button is NOT the same thing - verified on this machine, where TaskbarDa is already 0 and Widgets.exe (60.4 MB) and WidgetService.exe (26.6 MB) are both still resident. Expect roughly 87 MB and two idle processes back; on 61.6 GB of RAM that is a tidiness win, not a performance one, and it will not change your frame rate. Takes effect at next sign-out or restart.",
+                        "notes":  "Dsh key confirmed absent (Test-Path False), so applying creates it. MERGE CORRECTION: the reviewed note claimed revert \u0027leaves an empty Dsh key, because Quiesce does not delete keys\u0027. That is false in this codebase - TransactionEngine.RestorePrior on a KeyAbsent prior deletes the value and then calls Win32Registry.DeleteCreatedKeysIfEmpty, which walks the created chain deepest-first and removes each key that is still empty, stopping at the first key someone else has written into. Revert therefore leaves no Dsh residue in the normal case. Does NOT cover lock-screen widgets - that is a separate Dsh value (DisableWidgetsOnLockScreen), not authored here. MicrosoftWindows.Client.WebExperience 526.17301.40.0 and Microsoft.WidgetsPlatformRuntime 1.6.19.0 are installed; this policy blocks them rather than removing them, which is the reversible choice. The UI must never present this and shell.hide-widgets-button as one toggle."
+                    },
+                    {
+                        "id":  "shell.hide-widgets-button",
+                        "category":  "shell",
+                        "title":  "Hide the Widgets button on the taskbar",
+                        "evidence":  "Cosmetic",
+                        "impact":  "None",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22621,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                        "value":  "TaskbarDa",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "ShChangeNotify"
+                                       ],
+                        "whatItBreaks":  "Nothing. The widgets button disappears from the taskbar; Win+W still opens the board. This does NOT stop the Widgets background processes - verified on this machine, where TaskbarDa is already 0 and both Widgets.exe and WidgetService.exe are still running. Use the widgets policy entry if you want the processes gone. Explorer may need restarting for the taskbar to redraw.",
+                        "notes":  "Confirmed REG_DWORD 0x0 already, so Quiesce will elide this as already lean. The UI must never present this and shell.disable-widgets-policy as one toggle. MERGE: subkey case normalized to SOFTWARE to match the rest of the file; the registry is case-insensitive and the target is unchanged."
+                    },
+                    {
+                        "id":  "shell.hide-taskbar-search",
+                        "category":  "shell",
+                        "title":  "Hide the taskbar search box",
+                        "evidence":  "Cosmetic",
+                        "impact":  "None",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Search",
+                                        "value":  "SearchboxTaskbarMode",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "ShChangeNotify"
+                                       ],
+                        "whatItBreaks":  "The search box disappears from the taskbar, reclaiming that strip of space. Search still works - press Win, or Win+S, and type. This buys you no background work: SearchHost.exe stays resident either way (165.5 MB on this machine right now, with the box visible). Explorer must be restarted for the taskbar to redraw, and Quiesce will not do that for you in v1.",
+                        "notes":  "Confirmed REG_DWORD 0x2 (full search box). 0 = hidden, 1 = icon only, 2 = box, 3 = box with label. Use 1 for an icon-only middle ground. Sibling SearchboxTaskbarModeCache reads 0x1 while the live value reads 0x2 - they disagree, so test a write across a sign-out before trusting this entry."
+                    },
+                    {
+                        "id":  "shell.disable-start-web-search",
+                        "category":  "shell",
+                        "title":  "Stop Start menu search from querying the web",
+                        "evidence":  "Situational",
+                        "impact":  "Low",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  true,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",
+                                        "value":  "DisableSearchBoxSuggestions",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  1
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Start menu search stops returning Bing web results and web suggestions. Local apps, settings and files still search normally. Anyone who uses Start as a web search bar loses that habit. Typing in Start no longer makes a network round-trip, which plausibly means local results settle sooner - that has NOT been measured here, so treat it as a privacy and clutter change, not a performance one. Takes effect at next sign-out.",
+                        "notes":  "HKCU Policies\\Explorer key confirmed absent (parent CurrentVersion\\Policies exists); applying creates the subkey. MERGE CORRECTION: the reviewed note said revert \u0027leaves it behind empty\u0027. The engine deletes created keys that are still empty on revert - see the correction on shell.disable-widgets-policy. This is the setting still honoured on 24H2/25H2. Microsoft.BingSearch 1.1.43.0 is installed, so there is a live web provider for this to block. No broadcast makes SearchHost re-read it, hence activation None and requiresReboot true."
+                    },
+                    {
+                        "id":  "shell.menu-show-delay",
+                        "category":  "shell",
+                        "title":  "Remove the cascading menu open delay",
+                        "evidence":  "Measured",
+                        "impact":  "Low",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "Control Panel\\Desktop",
+                                        "value":  "MenuShowDelay",
+                                        "expectedKind":  "String",
+                                        "leanData":  "0"
+                                    }
+                                ],
+                        "activation":  [
+                                           "WmSettingChange"
+                                       ],
+                        "whatItBreaks":  "Cascading menus open the instant the pointer touches them instead of after 400 ms. The tradeoff is real: submenus will flick open when you merely drag the mouse across a parent item, which some people find twitchy. Zero effect on frame rate or game performance - this is UI feel only. It also mostly affects classic Win32 menus, not the XAML Start menu and context menus Windows 11 uses by default, so the win is smaller than tweak guides imply.",
+                        "notes":  "REG_SZ, NOT DWord - confirmed live as REG_SZ 400. A DWord write to this target silently no-ops. Substitute leanData \"20\" if instant flyout proves annoying. WM_SETTINGCHANGE does not refresh USER32\u0027s cached value in already-running processes; newly launched apps pick it up, everything else needs a restart or sign-out. The documented activation is SystemParametersInfo(SPI_SETMENUSHOWDELAY), which the activation enum cannot express."
+                    },
+                    {
+                        "id":  "shell.disable-taskbar-animations",
+                        "category":  "shell",
+                        "title":  "Turn off taskbar animations",
+                        "evidence":  "Cosmetic",
+                        "impact":  "None",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                        "value":  "TaskbarAnimations",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "ShChangeNotify",
+                                           "WmSettingChange"
+                                       ],
+                        "whatItBreaks":  "Taskbar animations stop playing - button slides, thumbnail fades and jump-list transitions snap instead. This value covers the TASKBAR only; window minimise and maximise animations are a different setting (see shell.disable-window-min-animations). Nothing functional is lost and there is no frame-rate or input-latency benefit in games. Explorer must be restarted before the change is fully visible, and Quiesce will not restart Explorer for you in v1.",
+                        "notes":  "Confirmed REG_DWORD 0x1 (stock). Mirrors part of the Show animations in Windows checkbox under Performance Options; the checkbox drives several values, this is one of them."
+                    },
+                    {
+                        "id":  "shell.disable-window-min-animations",
+                        "category":  "shell",
+                        "title":  "Turn off window minimise and maximise animations",
+                        "evidence":  "Cosmetic",
+                        "impact":  "None",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "Control Panel\\Desktop\\WindowMetrics",
+                                        "value":  "MinAnimate",
+                                        "expectedKind":  "String",
+                                        "leanData":  "0"
+                                    }
+                                ],
+                        "activation":  [
+                                           "WmSettingChange"
+                                       ],
+                        "whatItBreaks":  "Windows snap open and closed instead of sliding when you minimise or maximise them. Nothing functional is lost, and the transition feels marginally more immediate because you no longer wait out the animation. No frame-rate or input-latency benefit in games whatsoever. May need a sign-out before every surface honours it.",
+                        "notes":  "REG_SZ TRAP - confirmed live as REG_SZ 1, NOT a DWord. A DWord write here silently no-ops. Added by review because shell.disable-taskbar-animations falsely claimed to cover window minimise/maximise animations; TaskbarAnimations does not touch them, this value does. The documented activation is SystemParametersInfo(SPI_SETANIMATION), which the activation enum cannot express."
+                    },
+                    {
+                        "id":  "shell.disable-listview-alpha-select",
+                        "category":  "shell",
+                        "title":  "Use a plain File Explorer selection rectangle",
+                        "evidence":  "Cosmetic",
+                        "impact":  "None",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                                        "value":  "ListviewAlphaSelect",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "ShChangeNotify"
+                                       ],
+                        "whatItBreaks":  "Nothing. The translucent rubber-band rectangle you drag to select files in File Explorer becomes a plain outline. Purely visual, with no measurable performance difference on any modern GPU and certainly none on an RTX 3090. Explorer restart needed before it shows.",
+                        "notes":  "Confirmed REG_DWORD 0x1 (stock). Placebo on this hardware; listed so the user sees it labelled as such rather than finding it in a tweak guide presented as a speedup. Siblings ListviewShadow (1) and IconsOnly (0) deliberately not authored."
+                    },
+                    {
+                        "id":  "gaming.gamedvr-capture-off",
+                        "category":  "gaming",
+                        "title":  "Turn off Game Bar background recording",
+                        "evidence":  "Situational",
+                        "impact":  "Low",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "System\\GameConfigStore",
+                                        "value":  "GameDVR_Enabled",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    },
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR",
+                                        "value":  "AppCaptureEnabled",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    },
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR",
+                                        "value":  "HistoricalCaptureEnabled",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Win+G Game Bar capture stops working for your user account: no manual clips, no Game Bar screenshots, and the \u0027Record what happened\u0027 background buffer stays off. Game Bar still opens, and its widgets, performance overlay and audio mixer are unaffected. Third-party capture is untouched: OBS, NVIDIA App / ShadowPlay, Steam and Discord all keep recording normally. Other user accounts on this PC are not affected. You may need to close and reopen Game Bar, or sign out and back in, before it stops offering capture. Nothing else breaks.",
+                        "notes":  "Evidence is Situational, NOT Measured. Stopping a running background hardware encode is a real and measurable frame-time win, but that win only exists on a machine where the ring buffer is actually running - and on this one it is not. Verified live via RegistryKey.GetValueKind: GameDVR_Enabled=DWord 1, AppCaptureEnabled=DWord 1, HistoricalCaptureEnabled=DWord 0 ALREADY. Quiesce will elide the third op as \u0027already lean\u0027. Expect zero FPS change here; what this buys is that manual capture cannot be triggered accidentally mid-game and a slightly smaller idle footprint. The UI must not headline this as a performance feature on this machine. All three ops are HKCU, so this needs no admin and is trivially reversible: restore rewrites 1 / 1 / 0. Xbox Game Bar rewrites these values whenever its capture settings page is opened; if you want the change to survive that, apply gaming.gamedvr-policy-lock as well and read its warnings first."
+                    },
+                    {
+                        "id":  "gaming.gamedvr-policy-lock",
+                        "category":  "gaming",
+                        "title":  "Lock Game Bar recording off with a machine-wide policy",
+                        "evidence":  "Situational",
+                        "impact":  "Low",
+                        "riskTier":  3,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKLM",
+                                        "view":  "Registry64",
+                                        "subkey":  "SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR",
+                                        "value":  "AllowGameDVR",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  0
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "This writes a Group Policy value, so it does more than flip a setting. Game recording and broadcasting is disabled for EVERY user account on this PC, not just yours. Windows Settings \u003e Gaming \u003e Captures will show its controls greyed out with a \u0027Some of these settings are managed by your organization\u0027 notice - that notice is caused by this entry, not by real IT management, and it will confuse anyone who later looks at this machine. Restoring deletes the value and then removes the GameDVR policy key Quiesce created, as long as nothing else has written into it in the meantime; if something has, the key stays and the other party\u0027s values are left alone. Third-party capture is untouched: OBS, NVIDIA App / ShadowPlay, Steam and Discord keep recording normally.",
+                        "notes":  "Split out of gaming.gamedvr-capture-off. It is the sole reason that entry would have required admin, and bundling made the transaction all-or-nothing: an unelevated run would have got none of the HKCU wins instead of all of them. This is a durability mechanism, not a performance one - it exists only to stop Xbox Game Bar rewriting the HKCU values when its capture settings page is opened. Ship OFF and never pre-selected. MERGE CORRECTION 1: the submitted entry listed the SAME op twice (two identical AllowGameDVR writes). TransactionEngine.Plan does not de-duplicate targets, so that would have produced two planned steps, two journal rows and two writes for one value. The duplicate is removed. MERGE CORRECTION 2: the tier-3 rationale and the whatItBreaks text both claimed Quiesce can never remove the policy key it creates. That is false - RestorePrior calls DeleteCreatedKeysIfEmpty for a KeyAbsent prior. Tier 3 is retained on the two legs that survive: the change is machine-wide across every account, and it fabricates a managed-by-your-organization state on an unmanaged WORKGROUP PC. Verified live: the GameDVR subkey does NOT exist under HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows, a recursive /f GameDVR search returned 0 matches, and HKLM\\SOFTWARE\\WOW6432Node\\Policies\\Microsoft\\Windows\\GameDVR does not exist either. CAUTION: expectedKind DWord comes from Microsoft policy documentation, not from observation, because the target is absent. This is the only unverified kind in the whole catalog. Because the value does not exist, the loader\u0027s kind check cannot protect it - if the documentation is wrong the write silently no-ops and Quiesce reports success. Isolating it here means that failure mode cannot poison the three HKCU ops."
+                    },
+                    {
+                        "id":  "gaming.mouse-acceleration-off",
+                        "category":  "gaming",
+                        "title":  "Turn off mouse acceleration for a 1:1 pointer",
+                        "evidence":  "Measured",
+                        "impact":  "Medium",
+                        "riskTier":  1,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  false,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "Control Panel\\Mouse",
+                                        "value":  "MouseSpeed",
+                                        "expectedKind":  "String",
+                                        "leanData":  "0"
+                                    },
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "Control Panel\\Mouse",
+                                        "value":  "MouseThreshold1",
+                                        "expectedKind":  "String",
+                                        "leanData":  "0"
+                                    },
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKCU",
+                                        "view":  "Registry64",
+                                        "subkey":  "Control Panel\\Mouse",
+                                        "value":  "MouseThreshold2",
+                                        "expectedKind":  "String",
+                                        "leanData":  "0"
+                                    }
+                                ],
+                        "activation":  [
+                                           "SpiSetMouse"
+                                       ],
+                        "whatItBreaks":  "Nothing breaks. The pointer becomes 1:1 with the mouse: the same physical movement always travels the same number of pixels, no matter how fast you flick. If you are used to Windows\u0027 \u0027Enhance pointer precision\u0027, the desktop will feel slower at first and you may want to raise your mouse DPI to compensate. This changes zero frames - it is an input-feel change only.",
+                        "notes":  "Benefit is input consistency and aim repeatability - NOT frames and NOT frame-time. The UI must not imply a performance gain. All three values are REG_SZ on this machine, confirmed live through RegistryKey.GetValueKind (not reg query formatting): MouseSpeed=\u00271\u0027, MouseThreshold1=\u00276\u0027, MouseThreshold2=\u002710\u0027, which is Windows\u0027 stock acceleration-on state. Writing DWord 0 to these is the classic silent no-op; the loader\u0027s kind check catches it, but the trap is real. Activation MUST be SpiSetMouse (SystemParametersInfo SPI_SETMOUSE) - the registry write alone never reaches the running input stack, so without the broadcast the change appears to do nothing until logoff, and revert would leave the session on the tweaked curve. Note the honest ceiling: games using RawInput/DirectInput already bypass this curve entirely, so the win lands on the desktop and in engines that read the Windows pointer path."
+                    },
+                    {
+                        "id":  "gaming.hags-experiment",
+                        "category":  "gaming",
+                        "title":  "Hardware-accelerated GPU scheduling (A/B experiment)",
+                        "evidence":  "AB",
+                        "impact":  "Low",
+                        "riskTier":  2,
+                        "scope":  "Persistent",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  true,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "registry",
+                                        "hive":  "HKLM",
+                                        "view":  "Registry64",
+                                        "subkey":  "SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers",
+                                        "value":  "HwSchMode",
+                                        "expectedKind":  "DWord",
+                                        "leanData":  2
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "This is a coin flip, not an optimization, and it is the riskiest entry in this category. It needs a reboot to take effect and a second reboot to undo, so trying it costs two restarts. On some GPU and driver combinations HAGS removes a little render-queue latency; on others it introduces stutter, degrades or breaks overlay and capture tools such as OBS, Discord and the NVIDIA App, and changes how frame-pacing and latency features behave. There are credible reports of display-driver resets or a black screen after enabling it on particular driver revisions; if that happens, restore this entry and reboot, using safe mode if the desktop will not come up. Nothing is permanently damaged either way - the setting is a single value and restoring it puts the driver back exactly as it was.",
+                        "notes":  "Evidence is AB on purpose: hardware-dependent, ships OFF, presented as an experiment and never as an optimization. Live here: HwSchMode = REG_DWORD 1 (off), kind confirmed via GetValueKind on a Registry64 base key; 2 = on. HwSchState is ABSENT, meaning the toggle has not been moved since driver install. Quiesce writes only HwSchMode and must NOT synthesise HwSchState - the OS and driver own it. Specific to this box: an RTX 3090 driving a 4K60 panel is GPU-bound against a 60 Hz ceiling, so any HAGS delta will almost certainly sit inside run-to-run noise - compare 1% lows across several runs before believing either direction, and do not trust average FPS. If the GPU driver does not support HAGS, writing 2 is ignored and nothing happens; that is a no-op, not a success, and the UI should not claim otherwise. Scope MUST stay Persistent because this requires a reboot: a Session-scoped reboot-requiring entry would be auto-reverted by boot recovery before it ever took effect."
+                    },
+                    {
+                        "id":  "svc.inventory-appraisal",
+                        "category":  "services",
+                        "title":  "Pause compatibility appraisal",
+                        "evidence":  "Situational",
+                        "impact":  "Low",
+                        "riskTier":  1,
+                        "scope":  "Session",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "service",
+                                        "service":  "InventorySvc",
+                                        "startMode":  "Manual",
+                                        "stopNow":  true
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Windows stops running compatibility and inventory scans during your session. These normally fire on a timer and cause short CPU and disk bursts. Nothing user-facing changes; the scans resume when you Restore.",
+                        "notes":  "Session scope: Quiesce restores the original start type, delayed-auto flag and running state on Restore. Start type is only written AFTER the service is confirmed stopped, so a refused stop leaves it exactly as found."
+                    },
+                    {
+                        "id":  "svc.search-indexing",
+                        "category":  "services",
+                        "title":  "Pause Windows Search indexing",
+                        "evidence":  "Situational",
+                        "impact":  "Medium",
+                        "riskTier":  2,
+                        "scope":  "Session",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "service",
+                                        "service":  "WSearch",
+                                        "startMode":  "Manual",
+                                        "stopNow":  true
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Start menu and File Explorer stop finding results by file CONTENT while paused - filename search still works. Indexing is the largest periodic disk and CPU consumer in this list. Two dependent services (workfolderssvc, WMPNetworkSvc) are currently stopped; if either is running, Quiesce refuses rather than cascading.",
+                        "notes":  "Session scope: Quiesce restores the original start type, delayed-auto flag and running state on Restore. Start type is only written AFTER the service is confirmed stopped, so a refused stop leaves it exactly as found."
+                    },
+                    {
+                        "id":  "svc.telemetry-service",
+                        "category":  "services",
+                        "title":  "Pause the telemetry service",
+                        "evidence":  "Situational",
+                        "impact":  "Low",
+                        "riskTier":  1,
+                        "scope":  "Session",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "service",
+                                        "service":  "DiagTrack",
+                                        "startMode":  "Manual",
+                                        "stopNow":  true
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Connected User Experiences and Telemetry stops collecting and uploading during your session. Note it also spawns AggregatorHost.exe, which Quiesce cannot relaunch - it returns on its own after Restore or at next boot.",
+                        "notes":  "Session scope: Quiesce restores the original start type, delayed-auto flag and running state on Restore. Start type is only written AFTER the service is confirmed stopped, so a refused stop leaves it exactly as found."
+                    },
+                    {
+                        "id":  "svc.studio-effects",
+                        "category":  "services",
+                        "title":  "Pause the Windows AI fabric service",
+                        "evidence":  "Situational",
+                        "impact":  "Low",
+                        "riskTier":  1,
+                        "scope":  "Session",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "service",
+                                        "service":  "WSAIFabricSvc",
+                                        "startMode":  "Manual",
+                                        "stopNow":  true
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Windows Studio Effects (camera background blur, eye contact) stops working while paused. If you use a webcam with those effects during play, leave this off.",
+                        "notes":  "Session scope: Quiesce restores the original start type, delayed-auto flag and running state on Restore. Start type is only written AFTER the service is confirmed stopped, so a refused stop leaves it exactly as found."
+                    },
+                    {
+                        "id":  "svc.superfetch",
+                        "category":  "services",
+                        "title":  "Pause SysMain (Superfetch)",
+                        "evidence":  "NoEvidence",
+                        "impact":  "None",
+                        "riskTier":  1,
+                        "scope":  "Session",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "service",
+                                        "service":  "SysMain",
+                                        "startMode":  "Manual",
+                                        "stopNow":  true
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Nothing measurable on this machine. SysMain prefetches to hide mechanical-disk latency; on an NVMe SSD with 61 GB of RAM there is nothing for it to hide and no benefit to stopping it either. Shipped so you can see it and decide, not because it helps.",
+                        "notes":  "Session scope: Quiesce restores the original start type, delayed-auto flag and running state on Restore. Start type is only written AFTER the service is confirmed stopped, so a refused stop leaves it exactly as found."
+                    },
+                    {
+                        "id":  "svc.link-tracking",
+                        "category":  "services",
+                        "title":  "Pause Distributed Link Tracking",
+                        "evidence":  "NoEvidence",
+                        "impact":  "None",
+                        "riskTier":  1,
+                        "scope":  "Session",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "service",
+                                        "service":  "TrkWks",
+                                        "startMode":  "Manual",
+                                        "stopNow":  true
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Shortcuts stop auto-repairing themselves if you move their targets while paused. Costs essentially nothing to run; listed for completeness.",
+                        "notes":  "Session scope: Quiesce restores the original start type, delayed-auto flag and running state on Restore. Start type is only written AFTER the service is confirmed stopped, so a refused stop leaves it exactly as found."
+                    },
+                    {
+                        "id":  "svc.hardware-error-reporting",
+                        "category":  "services",
+                        "title":  "Pause hardware error reporting",
+                        "evidence":  "NoEvidence",
+                        "impact":  "None",
+                        "riskTier":  2,
+                        "scope":  "Session",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "service",
+                                        "service":  "whesvc",
+                                        "startMode":  "Manual",
+                                        "stopNow":  true
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Windows stops recording hardware error events while paused. If you are chasing instability - crashes, memory faults, an overclock - leave this alone: it is the log you would need.",
+                        "notes":  "Session scope: Quiesce restores the original start type, delayed-auto flag and running state on Restore. Start type is only written AFTER the service is confirmed stopped, so a refused stop leaves it exactly as found."
+                    },
+                    {
+                        "id":  "svc.maps-broker",
+                        "category":  "services",
+                        "title":  "Pause the offline maps broker",
+                        "evidence":  "Cosmetic",
+                        "impact":  "None",
+                        "riskTier":  1,
+                        "scope":  "Session",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "service",
+                                        "service":  "MapsBroker",
+                                        "startMode":  "Manual",
+                                        "stopNow":  true
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "Offline maps stop updating. Already stopped on this machine, so enabling this will show as \"already lean\" and change nothing.",
+                        "notes":  "Session scope: Quiesce restores the original start type, delayed-auto flag and running state on Restore. Start type is only written AFTER the service is confirmed stopped, so a refused stop leaves it exactly as found."
+                    },
+                    {
+                        "id":  "svc.print-spooler",
+                        "category":  "services",
+                        "title":  "Pause the print spooler",
+                        "evidence":  "NoEvidence",
+                        "impact":  "None",
+                        "riskTier":  3,
+                        "scope":  "Session",
+                        "requiresAdmin":  true,
+                        "requiresReboot":  false,
+                        "conflictsWith":  [
+
+                                          ],
+                        "minBuild":  22000,
+                        "ops":  [
+                                    {
+                                        "kind":  "service",
+                                        "service":  "Spooler",
+                                        "startMode":  "Manual",
+                                        "stopNow":  true
+                                    }
+                                ],
+                        "activation":  [
+                                           "None"
+                                       ],
+                        "whatItBreaks":  "PRINTING STOPS ENTIRELY while paused, including print-to-PDF. Queued jobs will not go out until Restore. There is no measured frame-time benefit; this exists because people ask for it.",
+                        "notes":  "Session scope: Quiesce restores the original start type, delayed-auto flag and running state on Restore. Start type is only written AFTER the service is confirmed stopped, so a refused stop leaves it exactly as found."
+                    }
+                ]
 }

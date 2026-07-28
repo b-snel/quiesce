@@ -67,7 +67,6 @@ public sealed class EngineTestHarness : IDisposable
             [
                 new RegistryOpSpec
                 {
-                    Kind = "registry",
                     Hive = CatalogHive.HKCU,
                     Subkey = subkey,
                     Value = valueName,
@@ -88,7 +87,7 @@ public sealed class EngineTestHarness : IDisposable
 
     public static RegistryTarget TargetOf(CatalogEntry entry, int opIndex = 0)
     {
-        var op = entry.Ops[opIndex];
+        var op = (RegistryOpSpec)entry.Ops[opIndex];
         return new RegistryTarget
         {
             Hive = "HKU",

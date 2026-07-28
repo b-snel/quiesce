@@ -135,7 +135,8 @@ public class JournalTests : IDisposable
                 StepId = 3,
                 EntryId = "e",
                 Scope = Quiesce.Core.Catalog.TweakScope.Session,
-                Target = target,
+                Target = target.ToString(),
+                RegistryTarget = target,
                 Prior = new Quiesce.Core.Platform.RegistryProbe
                 {
                     Presence = Quiesce.Core.Platform.RegPresence.ValueAbsent,
@@ -148,8 +149,8 @@ public class JournalTests : IDisposable
         var record = Assert.IsType<ApplyingRecord>(Assert.Single(JournalReader.Read(JournalPath).Records));
 
         Assert.Equal(3, record.StepId);
-        Assert.Equal(target.UserSid, record.Target.UserSid); // the SID survives the round trip
-        Assert.Equal(Quiesce.Core.Platform.RegPresence.ValueAbsent, record.Prior.Presence);
+        Assert.Equal(target.UserSid, record.RegistryTarget!.UserSid); // the SID survives the round trip
+        Assert.Equal(Quiesce.Core.Platform.RegPresence.ValueAbsent, record.Prior!.Presence);
         Assert.Contains(Quiesce.Core.Catalog.ActivationKind.ShChangeNotify, record.Activation);
     }
 
@@ -163,7 +164,8 @@ public class JournalTests : IDisposable
                 StepId = 1,
                 EntryId = "e",
                 Scope = Quiesce.Core.Catalog.TweakScope.Persistent,
-                Target = new Quiesce.Core.Platform.RegistryTarget { Hive = "HKLM", Subkey = "S", ValueName = "V" },
+                Target = @"HKLM\S :: V",
+                RegistryTarget = new Quiesce.Core.Platform.RegistryTarget { Hive = "HKLM", Subkey = "S", ValueName = "V" },
                 Prior = new Quiesce.Core.Platform.RegistryProbe { Presence = Quiesce.Core.Platform.RegPresence.KeyAbsent },
                 IntendedNew = EngineTestHarness.Dword(1),
             });

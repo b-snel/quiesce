@@ -39,7 +39,8 @@ public sealed class TransactionEngine(
     IActivationBroadcaster broadcaster,
     QuiescePaths paths,
     EngineInfo info,
-    IActivationCapture? activationCapture = null)
+    IActivationCapture? activationCapture = null,
+    IServiceControl? services = null)
 {
     private readonly StateStore _state = new(paths.DataRoot);
 
@@ -73,30 +74,93 @@ public sealed class TransactionEngine(
             foreach (var op in entry.Ops)
             {
                 stepId++;
-
-                var target = ResolveTarget(op);
-                var prior = registry.Probe(target);
-                var intended = new RegistryData { Kind = op.ExpectedKind, Data = op.LeanData };
-
-                var noOp = prior.Presence == RegPresence.ValuePresent
-                    && prior.Value is not null
-                    && prior.Value.DataEquals(intended);
-
-                steps.Add(new PlannedStep
+                steps.Add(op switch
                 {
-                    StepId = stepId,
-                    EntryId = entry.Id,
-                    Scope = entry.Scope,
-                    Target = target,
-                    Prior = prior,
-                    IntendedNew = intended,
-                    Activation = entry.Activation,
-                    NoOp = noOp,
+                    RegistryOpSpec r => PlanRegistry(stepId, entry, r),
+                    ServiceOpSpec s => PlanService(stepId, entry, s),
+                    _ => throw new NotSupportedException($"Unsupported op kind '{op.GetType().Name}'."),
                 });
             }
         }
 
         return new EngagePlan { Profile = profile, CatalogVersion = catalog.CatalogVersion, Steps = steps };
+    }
+
+    private PlannedStep PlanRegistry(int stepId, CatalogEntry entry, RegistryOpSpec op)
+    {
+        var target = ResolveTarget(op);
+        var prior = registry.Probe(target);
+        var intended = new RegistryData { Kind = op.ExpectedKind, Data = op.LeanData };
+
+        var noOp = prior.Presence == RegPresence.ValuePresent
+            && prior.Value is not null
+            && prior.Value.DataEquals(intended);
+
+        return new PlannedStep
+        {
+            StepId = stepId,
+            EntryId = entry.Id,
+            Scope = entry.Scope,
+            Op = op,
+            Target = target.ToString(),
+            RegistryTarget = target,
+            Prior = prior,
+            IntendedNew = intended,
+            Activation = entry.Activation,
+            NoOp = noOp,
+        };
+    }
+
+    private PlannedStep PlanService(int stepId, CatalogEntry entry, ServiceOpSpec op)
+    {
+        PlannedStep Step(ServiceSnapshot? before, ServiceStartType? intended, bool stop, bool noOp, string? refused) => new()
+        {
+            StepId = stepId,
+            EntryId = entry.Id,
+            Scope = entry.Scope,
+            Op = op,
+            Target = $"service {op.Service}",
+            ServiceBefore = before,
+            IntendedStartType = intended,
+            IntendedStop = stop,
+            Activation = entry.Activation,
+            NoOp = noOp,
+            RefusedReason = refused,
+        };
+
+        if (services is null)
+        {
+            return Step(null, null, false, false, "Service control is unavailable in this build.");
+        }
+
+        var before = services.Query(op.Service);
+
+        // "Not present on this build" is an outcome, not a failure: service names come and go
+        // between Windows releases (Fax is gone on 26200), and a tool that throws on absence is
+        // one Windows Update away from being unusable.
+        if (!before.Present)
+        {
+            return Step(before, null, false, noOp: true, refused: null);
+        }
+
+        var requested = op.StartMode.ToStartType();
+
+        // Trigger-started services are clamped to Manual. Disabling one does not stop the trigger
+        // from firing - activation just fails, and the dependent feature breaks silently weeks
+        // later with nothing to connect it to. Data may narrow this, never widen it.
+        var clamped = before.TriggerStarted && requested == ServiceStartType.Disabled
+            ? ServiceStartType.Manual
+            : requested;
+
+        if (Guardrails.RefuseServiceChange(before, services, out var reason))
+        {
+            return Step(before, clamped, op.StopNow, noOp: false, refused: reason);
+        }
+
+        var alreadyLean = before.StartType == clamped
+            && (!op.StopNow || before.RunState == ServiceRunState.Stopped);
+
+        return Step(before, clamped, op.StopNow, alreadyLean, refused: null);
     }
 
     // -------------------------------------------------------------- Engage
@@ -159,17 +223,43 @@ public sealed class TransactionEngine(
 
         foreach (var entryGroup in effective.GroupBy(s => s.EntryId))
         {
-            var appliedInEntry = new List<(PlannedStep Step, RegistryProbe Prior)>();
+            var appliedInEntry = new List<AppliedStep>();
             var entryFailed = false;
 
             foreach (var step in entryGroup)
             {
+                if (step.Op is ServiceOpSpec serviceOp)
+                {
+                    var outcome = ApplyService(journal, revertScript, step, serviceOp, fault);
+
+                    if (outcome.Skipped)
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    if (outcome.Failure is { } serviceFailure)
+                    {
+                        RollBackEntry(journal, entryGroup.Key, appliedInEntry, outcome.Applied, serviceFailure);
+                        rolledBackEntries.Add(entryGroup.Key);
+                        diagnoses[entryGroup.Key] = serviceFailure;
+                        entryFailed = true;
+                        break;
+                    }
+
+                    appliedInEntry.Add(outcome.Applied!);
+                    applied++;
+                    continue;
+                }
+
+                var target = step.RegistryTarget!;
+
                 // Re-probe at apply time: the plan-time prior may be stale, and the journalled
                 // prior must be the machine's state at the moment of mutation.
-                var prior = registry.Probe(step.Target);
+                var prior = registry.Probe(target);
                 var live = prior.Presence == RegPresence.ValuePresent ? prior.Value : null;
 
-                if (live is not null && live.DataEquals(step.IntendedNew))
+                if (live is not null && live.DataEquals(step.IntendedNew!))
                 {
                     skipped++;
                     continue;
@@ -189,6 +279,7 @@ public sealed class TransactionEngine(
                     EntryId = step.EntryId,
                     Scope = step.Scope,
                     Target = step.Target,
+                    RegistryTarget = target,
                     Prior = prior,
                     IntendedNew = step.IntendedNew,
                     Activation = step.Activation,
@@ -197,7 +288,7 @@ public sealed class TransactionEngine(
 
                 // Script the inverse before performing the mutation, for the same reason the
                 // journal is written first: the undo must exist on disk before the change does.
-                revertScript.AppendInverse(step.StepId, step.Target, prior);
+                revertScript.AppendInverse(step.StepId, target, prior);
                 foreach (var captured in activationPrior)
                 {
                     revertScript.AppendNote(
@@ -214,7 +305,7 @@ public sealed class TransactionEngine(
                 string? writeFailure = null;
                 try
                 {
-                    registry.SetValue(step.Target, step.IntendedNew);
+                    registry.SetValue(target, step.IntendedNew!);
                 }
                 catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException)
                 {
@@ -226,11 +317,11 @@ public sealed class TransactionEngine(
 
                 // Verify by re-reading the authoritative source. A non-throwing API call is not
                 // success: Tamper Protection and policy engines silently swallow writes.
-                var check = writeFailure is null ? registry.Probe(step.Target) : null;
+                var check = writeFailure is null ? registry.Probe(target) : null;
                 var ok = check is not null
                     && check.Presence == RegPresence.ValuePresent
                     && check.Value is not null
-                    && check.Value.DataEquals(step.IntendedNew);
+                    && check.Value.DataEquals(step.IntendedNew!);
 
                 journal.Append(new AppliedRecord
                 {
@@ -240,14 +331,14 @@ public sealed class TransactionEngine(
 
                 if (!ok)
                 {
-                    RollBackEntry(journal, entryGroup.Key, appliedInEntry, (step, prior), writeFailure ?? "verify failed");
+                    RollBackEntry(journal, entryGroup.Key, appliedInEntry, AppliedStep.ForRegistry(step, target, prior), writeFailure ?? "verify failed");
                     rolledBackEntries.Add(entryGroup.Key);
                     diagnoses[entryGroup.Key] = writeFailure ?? $"verify failed: live={Describe(check!)}";
                     entryFailed = true;
                     break;
                 }
 
-                appliedInEntry.Add((step, prior));
+                appliedInEntry.Add(AppliedStep.ForRegistry(step, target, prior));
                 applied++;
 
                 fault.AfterStepApplied(step.StepId);
@@ -282,21 +373,283 @@ public sealed class TransactionEngine(
         };
     }
 
+    /// <summary>
+    /// Applies one service step: journal the three-fact prior, reconfigure, optionally stop, verify.
+    /// </summary>
+    /// <remarks>
+    /// Ordering mirrors the registry path — prior state durable on disk before any mutation — but
+    /// the stop comes after the start-type change so that a service which refuses to stop is still
+    /// left reconfigured rather than in a state neither planned nor recorded.
+    /// </remarks>
+    private ServiceApplyOutcome ApplyService(
+        JournalWriter journal,
+        RevertScriptWriter revertScript,
+        PlannedStep step,
+        ServiceOpSpec op,
+        FaultInjector fault)
+    {
+        if (services is null)
+        {
+            return new ServiceApplyOutcome { Failure = "Service control is unavailable in this build." };
+        }
+
+        // Re-query at apply time. Guardrails were evaluated at plan time and the SCM can change in
+        // between - a service can gain a dependent, start running, or move host process. The check
+        // that matters is the one taken immediately before the mutation.
+        var before = services.Query(op.Service);
+
+        if (!before.Present)
+        {
+            return new ServiceApplyOutcome { Skipped = true };
+        }
+
+        if (Guardrails.RefuseServiceChange(before, services, out var refusal))
+        {
+            return new ServiceApplyOutcome { Failure = refusal };
+        }
+
+        var intended = before.TriggerStarted && op.StartMode == ServiceStartMode.Disabled
+            ? ServiceStartType.Manual
+            : op.StartMode.ToStartType();
+
+        var needsConfig = before.StartType != intended;
+        var needsStop = op.StopNow && before.RunState == ServiceRunState.Running;
+
+        if (!needsConfig && !needsStop)
+        {
+            return new ServiceApplyOutcome { Skipped = true };
+        }
+
+        journal.Append(new ApplyingRecord
+        {
+            StepId = step.StepId,
+            EntryId = step.EntryId,
+            Scope = step.Scope,
+            Target = step.Target,
+            Service = op.Service,
+            ServicePrior = before.ToPrior(),
+            IntendedStartType = intended,
+            IntendedStop = needsStop,
+            Activation = step.Activation,
+        });
+
+        revertScript.AppendServiceInverse(step.StepId, before);
+
+        // Snapshot the hosted process set so processes killed as collateral can be reported. Their
+        // loss is real and Quiesce cannot undo it, so the honest move is to record it rather than
+        // let "restored exactly" quietly cover a process that never came back.
+        var coTenants = before.HostProcessId != 0
+            ? services.ServicesInHostProcess(before.HostProcessId).Where(s => !s.Equals(op.Service, StringComparison.OrdinalIgnoreCase)).ToList()
+            : [];
+
+        try
+        {
+            // STOP FIRST, THEN RECONFIGURE. This ordering is load-bearing.
+            //
+            // Disabling a service does not stop it. If the start type were written first and the
+            // stop then timed out, the machine would be left Disabled-and-Running: everything looks
+            // correct for the whole session because the service is still up, and then it silently
+            // never returns at the next boot, days later, with nothing connecting it to Quiesce.
+            // Stopping first means a refused stop leaves the service exactly as it was found.
+            if (needsStop && !services.TryStop(op.Service, TimeSpan.FromSeconds(30), out var stopDiagnosis))
+            {
+                // A service that will not stop is left running and reported. Escalating - killing
+                // the host - is how a tool bugchecks a machine, so there is no escalation path.
+                journal.Append(new AppliedRecord
+                {
+                    StepId = step.StepId,
+                    Verify = $"StopRefused: {stopDiagnosis}",
+                });
+
+                return new ServiceApplyOutcome { Failure = $"StopRefused: {stopDiagnosis}" };
+            }
+
+            if (needsConfig)
+            {
+                // Preserve the delayed-auto flag rather than clearing it: the SCM stores it
+                // independently of the start type, so writing false here would orphan a flag that
+                // restore is then obliged to put back.
+                services.SetStartType(op.Service, intended, before.DelayedAutostart);
+            }
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            journal.Append(new AppliedRecord { StepId = step.StepId, Verify = $"ServiceFailed: {ex.Message}" });
+            return new ServiceApplyOutcome { Failure = $"ServiceFailed: {ex.Message}" };
+        }
+
+        // Verify by re-reading the SCM, never by trusting the call's return value.
+        var after = services.Query(op.Service);
+        var configOk = !needsConfig || after.StartType == intended;
+        var stopOk = !needsStop || after.RunState == ServiceRunState.Stopped;
+
+        journal.Append(new AppliedRecord
+        {
+            StepId = step.StepId,
+            Verify = configOk && stopOk
+                ? "ok"
+                : $"mismatch: startType={after.StartType} runState={after.RunState}",
+        });
+
+        if (!configOk || !stopOk)
+        {
+            return new ServiceApplyOutcome
+            {
+                Failure = $"Verification failed: the SCM reports startType={after.StartType}, runState={after.RunState}.",
+            };
+        }
+
+        if (needsStop && coTenants.Count > 0)
+        {
+            journal.Append(new SideEffectRecord
+            {
+                StepId = step.StepId,
+                Kind = "coHostedServices",
+                Detail =
+                    $"{op.Service} shared host process {before.HostProcessId} with: {string.Join(", ", coTenants)}. " +
+                    "Stopping it may have affected them.",
+                Recoverable = true,
+            });
+        }
+
+        fault.AfterStepApplied(step.StepId);
+
+        return new ServiceApplyOutcome { Applied = AppliedStep.ForService(step, op.Service, before) };
+    }
+
+    /// <summary>
+    /// Reverts one journalled service step: restore start type, delayed-auto and run state.
+    /// </summary>
+    /// <remarks>
+    /// Conflict handling mirrors the registry path. If the service's start type is no longer what
+    /// Quiesce set it to, something else — Windows Update, a driver install, the user — changed it
+    /// since, and overwriting that with a stale captured value would destroy configuration Quiesce
+    /// did not create. Keep current and say so.
+    /// </remarks>
+    private void RevertServiceStep(
+        JournalWriter journal,
+        ApplyingRecord step,
+        string serviceName,
+        List<string> messages,
+        ref int reverted,
+        ref int failed)
+    {
+        if (services is null)
+        {
+            messages.Add($"step {step.StepId} ({serviceName}): service control unavailable; cannot revert.");
+            failed++;
+            return;
+        }
+
+        if (step.ServicePrior is not { } prior || !prior.Present || prior.StartType is not { } priorStartType)
+        {
+            journal.Append(new RevertedRecord { StepId = step.StepId, Outcome = "skipped-absent" });
+            reverted++;
+            return;
+        }
+
+        try
+        {
+            var live = services.Query(serviceName);
+
+            if (!live.Present)
+            {
+                messages.Add($"step {step.StepId} ({serviceName}): service no longer exists; nothing to restore.");
+                journal.Append(new RevertedRecord { StepId = step.StepId, Outcome = "skipped-absent" });
+                reverted++;
+                return;
+            }
+
+            if (step.IntendedStartType is { } intended && live.StartType != intended && live.StartType != priorStartType)
+            {
+                messages.Add(
+                    $"step {step.StepId} ({serviceName}): start type changed since apply " +
+                    $"(now {live.StartType}); kept current rather than overwriting it.");
+                journal.Append(new RevertedRecord { StepId = step.StepId, Outcome = "conflict-kept-current" });
+                reverted++;
+                return;
+            }
+
+            services.SetStartType(serviceName, priorStartType, prior.DelayedAutostart ?? false);
+
+            // Only restart what was actually running. A Manual service that was stopped must stay
+            // stopped, and starting it "to be safe" would leave the machine in a state it was
+            // never in.
+            if (prior.RunState == ServiceRunState.Running && live.RunState != ServiceRunState.Running)
+            {
+                if (!services.TryStart(serviceName, TimeSpan.FromSeconds(30), out var startDiagnosis))
+                {
+                    messages.Add(
+                        $"step {step.StepId} ({serviceName}): start type restored, but the service did not " +
+                        $"restart ({startDiagnosis}). It may start on demand, or a reboot will restore it.");
+                }
+            }
+
+            journal.Append(new RevertedRecord { StepId = step.StepId, Outcome = "restored" });
+            reverted++;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            messages.Add($"step {step.StepId} ({serviceName}): revert failed: {ex.Message}");
+            failed++;
+        }
+    }
+
+    /// <summary>Undoes one applied step, dispatching on which kind of prior it captured.</summary>
+    private void UndoApplied(AppliedStep applied)
+    {
+        if (applied.RegistryTarget is { } target && applied.RegistryPrior is { } prior)
+        {
+            RestorePrior(target, prior);
+            return;
+        }
+
+        if (applied.Service is { } service && applied.ServicePrior is { } servicePrior && services is not null)
+        {
+            RestoreService(service, servicePrior);
+        }
+    }
+
+    /// <summary>
+    /// Restores a service's three captured facts: start type, delayed-auto flag, and run state.
+    /// </summary>
+    /// <remarks>
+    /// Start type is restored before the service is started, so a service that was Automatic comes
+    /// back Automatic rather than being started while still marked Disabled. Only services that
+    /// were actually running are started — a stopped Manual service must stay stopped.
+    /// </remarks>
+    private void RestoreService(string service, ServiceSnapshot prior)
+    {
+        if (services is null || !prior.Present || prior.StartType is not { } startType)
+        {
+            return;
+        }
+
+        services.SetStartType(service, startType, prior.DelayedAutostart);
+
+        if (prior.RunState == ServiceRunState.Running)
+        {
+            services.TryStart(service, TimeSpan.FromSeconds(30), out _);
+        }
+    }
+
     /// <summary>Entry-level atomicity: unwind every applied step of the failing entry, newest first.</summary>
     private void RollBackEntry(
         JournalWriter journal,
         string entryId,
-        List<(PlannedStep Step, RegistryProbe Prior)> appliedInEntry,
-        (PlannedStep Step, RegistryProbe Prior) failedStep,
+        List<AppliedStep> appliedInEntry,
+        AppliedStep? failedStep,
         string reason)
     {
-        var toUndo = appliedInEntry.Append(failedStep).Reverse().ToList();
+        var toUndo = (failedStep is null ? appliedInEntry : appliedInEntry.Append(failedStep))
+            .Reverse()
+            .ToList();
         var undone = new List<int>();
 
-        foreach (var (step, prior) in toUndo)
+        foreach (var undo in toUndo)
         {
-            RestorePrior(step.Target, prior);
-            undone.Add(step.StepId);
+            UndoApplied(undo);
+            undone.Add(undo.StepId);
         }
 
         journal.Append(new EntryRolledBackRecord
@@ -342,12 +695,33 @@ public sealed class TransactionEngine(
         var broadcasts = new HashSet<ActivationKind>();
         var stateReplays = new List<ActivationState>();
 
-        // Registry steps unwind newest-first. (Dependency-ordered revert across op kinds —
-        // services before registry before relaunch — arrives with those op kinds.)
-        foreach (var step in pending.OrderByDescending(s => s.StepId))
+        // Dependency order, not naive reverse: services and power first, then registry, then
+        // activation broadcasts. Unwinding strictly newest-first would restore registry values that
+        // a service reads at startup *after* restarting that service, so it would come back having
+        // read the tweaked value. Within a kind, newest-first still holds.
+        var ordered = pending
+            .OrderBy(s => s.Service is not null ? 0 : 1)
+            .ThenByDescending(s => s.StepId)
+            .ToList();
+
+        foreach (var step in ordered)
         {
-            if (step.Target.Hive == "HKU"
-                && step.Target.UserSid is { } sid
+            if (step.Service is { } serviceName)
+            {
+                RevertServiceStep(journal, step, serviceName, messages, ref reverted, ref failed);
+                continue;
+            }
+
+            var registryTarget = step.RegistryTarget;
+            if (registryTarget is null || step.Prior is null)
+            {
+                messages.Add($"step {step.StepId}: journal record carries neither a registry nor a service target; skipped.");
+                failed++;
+                continue;
+            }
+
+            if (registryTarget.Hive == "HKU"
+                && registryTarget.UserSid is { } sid
                 && !registry.UserHiveLoaded(sid))
             {
                 // Not loaded => defer, keep dirty. Writing via a probe that reports KeyAbsent
@@ -364,10 +738,10 @@ public sealed class TransactionEngine(
 
             try
             {
-                var live = registry.Probe(step.Target);
+                var live = registry.Probe(registryTarget);
                 var liveMatchesIntended = live.Presence == RegPresence.ValuePresent
                     && live.Value is not null
-                    && live.Value.DataEquals(step.IntendedNew);
+                    && live.Value.DataEquals(step.IntendedNew!);
 
                 string outcome;
                 if (!liveMatchesIntended && live.Presence == RegPresence.ValuePresent)
@@ -382,7 +756,7 @@ public sealed class TransactionEngine(
                 }
                 else
                 {
-                    RestorePrior(step.Target, step.Prior);
+                    RestorePrior(registryTarget, step.Prior);
                     outcome = step.Prior.Presence == RegPresence.ValuePresent ? "restored" : "deleted";
 
                     // An activation with captured state gets that state replayed; one without is a
@@ -506,7 +880,7 @@ public sealed class TransactionEngine(
         // Committed and dirty = engaged steady state. Session-scoped steps whose boot has passed
         // are auto-reverted (the gaming session is over, whatever it was); persistent-scoped
         // steps are standing preferences and are never auto-reverted by recovery.
-        var rebootedSince = sessionStart is not null && sessionStart.BootId != QuiescePaths.CurrentBootId();
+        var rebootedSince = sessionStart is not null && !QuiescePaths.IsSameBoot(sessionStart.BootId);
         var pendingScopes = PendingSteps(read.Records).Select(s => s.Scope).Distinct().ToList();
 
         if (rebootedSince && pendingScopes.Contains(TweakScope.Session))

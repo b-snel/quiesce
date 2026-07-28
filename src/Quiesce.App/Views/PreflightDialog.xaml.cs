@@ -31,7 +31,18 @@ public partial class PreflightDialog
             Summary.Text += $"  ({elided} already lean, skipped)";
         }
 
-        StepList.ItemsSource = steps.Select(PreflightRow.From).ToList();
+        // Refused steps are listed alongside the ones that will run, with their reason. Hiding them
+        // would make a guardrail indistinguishable from a tweak that quietly did nothing — and
+        // "Quiesce refuses to touch this, and here is why" is the moment the tool earns trust.
+        var refused = plan.RefusedSteps.ToList();
+        StepList.ItemsSource = steps.Select(PreflightRow.From)
+            .Concat(refused.Select(PreflightRow.FromRefused))
+            .ToList();
+
+        if (refused.Count > 0)
+        {
+            Summary.Text += $"  ·  {refused.Count} refused by guardrails";
+        }
 
         ReversibilityNote.Text = plan.RequiresElevation
             ? "Every change is written to Quiesce's journal before it is made, so Restore puts it all back — including after a crash."
@@ -92,15 +103,32 @@ public sealed record PreflightRow
             StepLabel = $"step {step.StepId}",
             EntryId = step.EntryId,
             ScopeLabel = step.Scope == Core.Catalog.TweakScope.Session ? "session" : "persistent",
-            Target = step.Target.ToString(),
-            PriorText = Describe(step.Prior),
-            NewText = $"{step.IntendedNew.Kind} {JsonSerializer.Serialize(step.IntendedNew.Data)}",
+            Target = step.Target,
+            PriorText = step.ServiceBefore is { } svc
+                ? $"start type {svc.StartType}{(svc.DelayedAutostart ? " (delayed)" : string.Empty)}, currently {svc.RunState}"
+                : Describe(step.Prior!),
+            NewText = step.ServiceBefore is not null
+                ? $"start type {step.IntendedStartType}{(step.IntendedStop ? ", stopped now" : ", left running")}"
+                : $"{step.IntendedNew!.Kind} {JsonSerializer.Serialize(step.IntendedNew.Data)}",
             ActivationText = activations.Count > 0
                 ? $"then notifies Windows: {string.Join(", ", activations)}"
                 : string.Empty,
             ActivationVisibility = activations.Count > 0 ? Visibility.Visible : Visibility.Collapsed,
         };
     }
+
+    /// <summary>A guardrail-refused step, rendered so the user can see what was declined and why.</summary>
+    public static PreflightRow FromRefused(PlannedStep step) => new()
+    {
+        StepLabel = "refused",
+        EntryId = step.EntryId,
+        ScopeLabel = "locked",
+        Target = step.Target,
+        PriorText = "unchanged",
+        NewText = step.RefusedReason ?? "refused by a guardrail",
+        ActivationText = string.Empty,
+        ActivationVisibility = Visibility.Collapsed,
+    };
 
     private static string Describe(RegistryProbe probe) => probe.Presence switch
     {
