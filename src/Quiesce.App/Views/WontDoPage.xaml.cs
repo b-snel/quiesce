@@ -54,6 +54,22 @@ public partial class WontDoPage
         new("A built-in FPS counter or 'boost score'",
             "Quiesce does not measure frames, so it will not imply that it does. If you want to verify results, " +
             "use PresentMon or CapFrameX and compare 1% lows - that is where the effect is."),
+
+        // Investigated because it was asked for, and refused because the investigation came back negative.
+        // This row exists so the answer is visible in the app rather than living only in a commit message:
+        // "there is no switch for this" is a finding, and hiding it would leave the user assuming Quiesce
+        // just had not got around to Phone Link yet.
+        new("A 'turn off Phone Link' toggle",
+            "Measured on this machine, there is nothing honest to put behind that switch. PhoneExperienceHost.exe " +
+            "has no window, so it cannot be asked to close. Its sign-in task is ALREADY disabled - and it is " +
+            "running anyway, because Windows activates it as a background COM server; every one of the 11 " +
+            "activations in a week followed the cross-device Resume feature starting, seconds earlier. The " +
+            "per-user switches in Settings are read by the app AFTER it has already started, so they change what " +
+            "it does, not whether it runs. The one policy that gates the launch is documented by Microsoft for " +
+            "Insider Preview only, needs elevation and a reboot, adds another 'managed by your organization' " +
+            "banner, and un-links your phone in a way no registry restore can put back. Quiesce can still " +
+            "throttle it from the Running apps page, and that is described as a throttle because that is what it " +
+            "is. A row labelled 'off' that left the process running would be the tool lying to you."),
     ];
 
     public WontDoPage()

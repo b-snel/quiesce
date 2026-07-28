@@ -226,10 +226,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   a decision to stop updating anything. Neither touches the thing you actually care about: Logitech device
   behaviour lives in G HUB itself and in separate kernel drivers (`logi_joy_*`, `logi_lamparray`), and the
   Nord tunnel lives in `nordvpn-service`, which stays locked.
-  <br>`svc.lghub-updater` notes one thing worth knowing: `LGHUBUpdaterService` carries a `RESTART` failure
-  action at 5 s with an infinite reset period. Failure actions fire on unclean termination, not on a clean SCM
-  stop, and Quiesce only ever issues a clean stop — but if the process dies on its own it comes straight back,
-  and that is not Quiesce failing to hold it down.
+  <br>**`svc.lghub-updater` will not necessarily stay stopped, and says so up front.** Its security descriptor
+  grants `SERVICE_START` to **Everyone** (`D:(A;;RP;;;WD)…` — `RP` to `WD`), so any program on the machine,
+  including G HUB when you next open it, can start it again with no elevation and no prompt. `Manual` stops
+  *Windows* from starting a service automatically; it stops nothing else from starting it on purpose. That is
+  now the loudest sentence in the entry, because a user who pauses the updater, opens G HUB and finds it
+  running would reasonably conclude the tool lied. `NordUpdaterService` has no such ACE.
+  <br>The same entry documents a `RESTART` failure action at 5 s with an infinite reset period, and — this part
+  was checked rather than assumed — `sc.exe qfailureflag` reports `FAILURE_ACTIONS_ON_NONCRASH_FAILURES: FALSE`,
+  so those actions arm only when the process terminates *without* reporting `SERVICE_STOPPED`, which a clean SCM
+  stop does not. Worth checking explicitly: the same flag is **TRUE** on `NvContainerLocalSystem`, where the
+  identical reasoning would have been wrong.
+- **M6** — **"Turn off Phone Link" is now a documented refusal rather than a missing feature.** It was
+  investigated because it was asked for, and the answer came back negative, so the answer is in the app instead
+  of a commit message. Measured: `PhoneExperienceHost.exe` has no window, so the close ladder cannot reach it;
+  its UWP startup task is **already** `DisabledByUser` and the process runs anyway, because Windows activates it
+  as a background COM server — all 11 activations in a week followed the cross-device Resume feature launching,
+  seconds earlier. The per-user Settings switches are read by the app *after* it starts, so they change what it
+  does, not whether it runs. The one policy that gates the launch is documented by Microsoft for Insider
+  Preview only, needs elevation and a reboot, adds a seventh "managed by your organization" banner, and
+  un-links the phone in a way no registry restore reverses. It fails the bar twice: it would not deliver what
+  its label promised, and its undo is not an undo.
+  <br>`EnableMmx` is the policy that *looks* like the answer and is not — its only consumers on this build are
+  `CDPUserSvc`, the Settings phone page and three shell helpers, none in the activation path. A test now keeps
+  it out of the catalog, so this cannot be shipped later by someone reading a tweak guide. Phone Link can still
+  be throttled from Running apps, described as a throttle, because that is what it is.
 
 ### Changed
 

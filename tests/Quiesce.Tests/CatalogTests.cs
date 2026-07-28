@@ -372,6 +372,38 @@ public class CatalogTests
         Assert.All(targeted, name => Assert.False(Guardrails.IsProcessProtected(name)));
     }
 
+    /// <summary>
+    /// The Phone Link refusal, pinned so it cannot be quietly undone.
+    /// </summary>
+    /// <remarks>
+    /// <c>EnableMmx</c> is the policy that looks like the answer to "turn off Phone Link" and is not. Measured:
+    /// the policy is real and documented (this machine's own <c>GroupPolicy.admx</c> declares
+    /// <c>EnableMMX</c> against <c>Software\Policies\Microsoft\Windows\System</c>, and the Policy CSP names it
+    /// as the backing for <c>Connectivity/AllowPhonePCLinking</c>) — but its only consumers on this build are
+    /// <c>CDPUserSvc</c>, the Settings phone page and three shell helpers, none of them in the COM/AppX
+    /// activation path, so writing it does NOT stop <c>PhoneExperienceHost.exe</c> running. What it does do is
+    /// un-link the PC from the phone, which Microsoft's own help text describes as the device removing itself
+    /// from the phone's device list — and no registry restore reverses that.
+    /// <para>
+    /// So it fails the project's bar twice over: it does not deliver what its label would promise, and its
+    /// undo is not an undo. The refusal is documented on the "What Quiesce won't do" page; this test is what
+    /// stops someone shipping it anyway after reading a tweak guide.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void The_shipped_catalog_does_not_write_the_phone_linking_policy()
+    {
+        var catalog = CatalogLoader.LoadFile(FindShippedCatalog());
+
+        var values = catalog.Entries
+            .SelectMany(e => e.Ops.OfType<RegistryOpSpec>())
+            .Select(op => op.Value)
+            .ToList();
+
+        Assert.NotEmpty(values);
+        Assert.DoesNotContain("EnableMmx", values, StringComparer.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void Everything_the_default_profile_enables_exists_in_the_shipped_catalog()
     {
