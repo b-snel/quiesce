@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build, test, guardrails
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # MinVer derives the version from tags and commit height, so a shallow clone
+          # produces the wrong version.
+          fetch-depth: 0
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build -c Release --no-restore
+
+      - name: Test
+        run: dotnet test -c Release --no-build --verbosity normal
+
+      - name: Verify CLI contract
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter quiesce.exe -Path src/Quiesce.Cli/bin/Release | Select-Object -First 1
+          if (-not $exe) { throw "quiesce.exe not found" }
+
+          & $exe.FullName --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "--help must exit 0, got $LASTEXITCODE" }
+
+          & $exe.FullName --version | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "--version must exit 0, got $LASTEXITCODE" }
+
+          & $exe.FullName definitely-not-a-verb 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 2) { throw "unknown verb must exit 2, got $LASTEXITCODE" }
+
+          Write-Host "CLI contract OK"
+
+      - name: Validate catalog JSON
+        shell: pwsh
+        run: |
+          # M0 checks that every catalog file is well-formed JSON. Shape validation against the
+          # CatalogEntry schema lands in M1 as a unit test, which is stronger than an external
+          # JSON Schema because it validates against the type the engine actually deserializes to.
+          $files = Get-ChildItem catalog -Filter *.json -ErrorAction SilentlyContinue
+          if (-not $files) { throw "no catalog files found" }
+          foreach ($f in $files) {
+            try { Get-Content $f.FullName -Raw | ConvertFrom-Json | Out-Null }
+            catch { throw "$($f.Name) is not valid JSON: $_" }
+            Write-Host "ok  $($f.Name)"
+          }
+
+  guardrails:
+    name: Guardrail grep
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The compile-time half of this gate is Microsoft.CodeAnalysis.BannedApiAnalyzers driven by
+      # BannedSymbols.txt. This is the other half: the analyzer catches real references, this catches
+      # strings, reflection, and anything that would slip past a type-level ban.
+      #
+      # Why these specific names:
+      #   injection primitives  - EasyAntiCheat is installed on the target machine and kernel
+      #                           anti-cheats treat injection against a protected game as cheating.
+      #                           EAC bans propagate across every EAC title on the hardware ID.
+      #   Nt*Process*State      - Quiesce does not suspend processes at all, by design decision.
+      #   REALTIME_PRIORITY     - starves dwm/audiodg/input; average FPS rises while it gets worse.
+      #   taskkill              - never terminate a service host; that is a 0xEF bugcheck.
+      - name: No banned APIs in source
+        run: |
+          set -uo pipefail
+          BANNED='CreateRemoteThread|WriteProcessMemory|ReadProcessMemory|VirtualAllocEx|QueueUserAPC|SetWindowsHookEx|NtSuspendProcess|NtResumeProcess|NtCreateProcessStateChange|NtChangeProcessState|REALTIME_PRIORITY_CLASS|ProcessPriorityClass\.RealTime|taskkill'
+          fail=0
+          while IFS= read -r f; do
+            # Strip // and /// comments so prose explaining the guardrails does not trip it.
+            hits=$(sed -e 's@//.*@@' "$f" | grep -nE "$BANNED" || true)
+            if [ -n "$hits" ]; then
+              echo "::error file=$f::banned API referenced"
+              echo "  $f"
+              echo "$hits" | sed 's/^/    /'
+              fail=1
+            fi
+          done < <(find src tests -name '*.cs')
+          if [ "$fail" -ne 0 ]; then
+            echo
+            echo "Quiesce must contain zero code-injection primitives and must never suspend a"
+            echo "process or raise one above ABOVE_NORMAL. See BannedSymbols.txt for the rationale."
+            exit 1
+          fi
+          echo "No banned APIs found."
+
+      - name: No signing keys committed
+        run: |
+          set -uo pipefail
+          # The Ed25519 PRIVATE key belongs in the NETSPARKLE_PRIVATE_KEY secret and nowhere else.
+          # The public key is compiled into the app and is expected to be committed.
+          if git ls-files | grep -iE '\.(pfx|p12|snk|privkey)$|_private\.key$|NetSparkle_Ed25519\.priv'; then
+            echo "::error::signing material is tracked in git"
+            exit 1
+          fi
+          echo "No signing material tracked."

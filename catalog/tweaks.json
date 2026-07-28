@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "0.1.0",
+  "entries": [
+    {
+      "id": "bloat.contentdelivery-off",
+      "category": "debloat",
+      "title": "Stop silent app installs and Start-menu suggestions",
+      "evidence": "Measured",
+      "impact": "Low",
+      "riskTier": 1,
+      "scope": "persistent",
+      "requiresAdmin": false,
+      "requiresReboot": false,
+      "conflictsWith": [],
+      "minBuild": 22000,
+      "ops": [
+        {
+          "kind": "registry",
+          "hive": "HKCU",
+          "view": "Registry64",
+          "subkey": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+          "value": "SilentInstalledAppsEnabled",
+          "expectedKind": "DWord",
+          "leanData": 0
+        }
+      ],
+      "activation": ["shchangenotify"],
+      "whatItBreaks": "Start menu stops suggesting apps. No functional loss.",
+      "notes": "The M1 proving entry: per-user, no admin, no reboot, and absent-by-default on a clean install, which exercises the tri-state prior (restore must DELETE the value, not write 0)."
+    }
+  ]
+}
