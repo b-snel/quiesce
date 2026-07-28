@@ -15,14 +15,14 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # MinVer derives the version from tags and commit height, so a shallow clone
           # produces the wrong version.
           fetch-depth: 0
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
@@ -38,19 +38,35 @@ jobs:
       - name: Verify CLI contract
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Recurse -Filter quiesce.exe -Path src/Quiesce.Cli/bin/Release | Select-Object -First 1
-          if (-not $exe) { throw "quiesce.exe not found" }
+          # The exit codes are a public contract: the verification scripts in the plan assert on
+          # them, and the boot/logon recovery tasks branch on them.
+          #
+          # Note the explicit `exit 0` at the end. This step deliberately runs a command that exits
+          # non-zero, which leaves $LASTEXITCODE set; the Actions pwsh wrapper propagates that as the
+          # step's result, so without it the step fails even when every assertion passed.
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
 
-          & $exe.FullName --help | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "--help must exit 0, got $LASTEXITCODE" }
+          $exe = Get-ChildItem -Recurse -Filter quiesce.exe -Path src/Quiesce.Cli/bin/Release |
+                 Select-Object -First 1
+          if (-not $exe) { Write-Host "::error::quiesce.exe not found"; exit 1 }
 
-          & $exe.FullName --version | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "--version must exit 0, got $LASTEXITCODE" }
+          & $exe.FullName --help  *> $null; $help    = $LASTEXITCODE
+          & $exe.FullName --version *> $null; $ver   = $LASTEXITCODE
+          & $exe.FullName definitely-not-a-verb *> $null; $unknown = $LASTEXITCODE
 
-          & $exe.FullName definitely-not-a-verb 2>$null | Out-Null
-          if ($LASTEXITCODE -ne 2) { throw "unknown verb must exit 2, got $LASTEXITCODE" }
+          $bad = @()
+          if ($help    -ne 0) { $bad += "--help exited $help (want 0)" }
+          if ($ver     -ne 0) { $bad += "--version exited $ver (want 0)" }
+          if ($unknown -ne 2) { $bad += "unknown verb exited $unknown (want 2)" }
 
-          Write-Host "CLI contract OK"
+          if ($bad.Count) {
+            $bad | ForEach-Object { Write-Host "::error::$_" }
+            exit 1
+          }
+
+          Write-Host "CLI contract OK (help=$help version=$ver unknown=$unknown)"
+          exit 0
 
       - name: Validate catalog JSON
         shell: pwsh
@@ -71,7 +87,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The compile-time half of this gate is Microsoft.CodeAnalysis.BannedApiAnalyzers driven by
       # BannedSymbols.txt. This is the other half: the analyzer catches real references, this catches
