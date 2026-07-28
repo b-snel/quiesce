@@ -748,9 +748,21 @@ public sealed class TransactionEngine(
     /// That asymmetry is why the catalog loader refuses an entry mixing the two actions.
     /// </para>
     /// </remarks>
+    /// <param name="revertScript">
+    /// Recovery net 4, or null for a resync.
+    /// </param>
+    /// <remarks>
+    /// Null for a resync, and not as a shortcut. <c>RevertScriptWriter.Create</c> opens with
+    /// <c>FileMode.Create</c>, so reopening it for a live session would TRUNCATE the standalone
+    /// <c>reg.exe</c>/<c>sc.exe</c> script that is the one recovery net needing no Quiesce binary at all.
+    /// And <c>Finish()</c> has already written <c>exit /b 0</c>, so anything appended after it is
+    /// unreachable anyway. The honest cost: <c>revert.cmd</c> will not mention applications a resync
+    /// closed — which is a cost it could never have paid, since the file already says it can undo neither
+    /// a close nor a throttle.
+    /// </remarks>
     private ProcessApplyOutcome ApplyProcess(
         JournalWriter journal,
-        RevertScriptWriter revertScript,
+        RevertScriptWriter? revertScript,
         PlannedStep step,
         ProcessOpSpec op,
         FaultInjector fault)
@@ -795,7 +807,7 @@ public sealed class TransactionEngine(
                 Activation = step.Activation,
             });
 
-            revertScript.AppendProcessNote(step.StepId, prior, op.Action, intendedPriority);
+            revertScript?.AppendProcessNote(step.StepId, prior, op.Action, intendedPriority);
         }
 
         if (op.Action == Catalog.ProcessAction.Throttle)
@@ -2115,6 +2127,350 @@ public sealed class TransactionEngine(
         };
     }
 
+    // -------------------------------------------------------------- Resync
+
+    /// <summary>
+    /// Builds the plan for putting back the resyncable half of a drift report.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Step ids are allocated from the EXISTING journal, not from 1, because these records are appended to
+    /// the session that is already open. So the plan the preflight renders carries the ids that will
+    /// actually be written — the same property Engage has, and the reason the preflight takes a real
+    /// <see cref="EngagePlan"/> rather than a summary model.
+    /// </para>
+    /// <para>
+    /// The <see cref="ProcessOpSpec"/> for each step is RECONSTRUCTED from the journal record, not looked up
+    /// in the catalog. That keeps resync catalog-free, the same property revert has and for the same
+    /// reason: the records are the truth, and a catalog that changed since Engage must not be able to
+    /// change what a resync does to a session it did not plan. <c>UnderDirectories</c> is filled from the
+    /// recorded image path for completeness and is NEVER used for matching here — the match already
+    /// happened, by exact full path, in <see cref="ProcessPrior.IsSameProgram"/>.
+    /// </para>
+    /// </remarks>
+    public EngagePlan PlanResync(DriftReport drift)
+    {
+        ArgumentNullException.ThrowIfNull(drift);
+
+        var catalogVersion = "unknown";
+        var nextId = 1;
+
+        try
+        {
+            var records = JournalReader.Read(
+                Path.Combine(paths.SessionDir(drift.SessionId), "journal.jsonl")).Records;
+
+            nextId = NextStepId(records);
+            catalogVersion = records.OfType<SessionStartRecord>().FirstOrDefault()?.CatalogVersion ?? catalogVersion;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException
+                                      or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            // An empty plan, so Resync's own refusals produce the message rather than this producing a
+            // half-built one. Resync re-reads the journal and will refuse for the same reason.
+            return new EngagePlan { Profile = "resync", CatalogVersion = catalogVersion, Steps = [] };
+        }
+
+        var steps = new List<PlannedStep>();
+
+        foreach (var item in drift.Resyncable)
+        {
+            if (item.RecordedProcess is not { } prior)
+            {
+                continue;
+            }
+
+            var action = item.Kind == DriftKind.ProcessReturned ? ProcessAction.Close : ProcessAction.Throttle;
+
+            ThrottleLevel? level = null;
+            if (action == ProcessAction.Throttle)
+            {
+                // From the journalled INTENT, so a resync re-throttles to the level the session chose. The
+                // prior is the value the throttle moved away from; re-applying that would restore full
+                // priority while reporting a throttle. A level this build cannot name is skipped rather
+                // than coerced - the same refusal the revert path makes for an uninterpretable priority.
+                if (!TryThrottleLevel(item.RecordedIntendedPriority, out var parsed))
+                {
+                    continue;
+                }
+
+                level = parsed;
+            }
+
+            var op = new ProcessOpSpec
+            {
+                Action = action,
+                ImageName = prior.ImageName,
+                UnderDirectories = [Path.GetDirectoryName(prior.ImagePath) ?? string.Empty],
+                ThrottleTo = level,
+            };
+
+            foreach (var live in item.LiveProcesses)
+            {
+                steps.Add(new PlannedStep
+                {
+                    StepId = nextId++,
+                    EntryId = item.EntryId,
+
+                    // The scope of the record this is putting back, carried through rather than defaulted.
+                    // Getting it wrong would change what boot recovery does to the whole session, because
+                    // Recover keys on whether ANY pending step is Session-scoped.
+                    Scope = ScopeOfStep(drift.SessionId, item.StepId),
+                    Op = op,
+                    Target = $"{op.TargetDescription} — {live.ImageName} (pid {live.Identity.Pid}), resync",
+                    RequiresReboot = false,
+                    ProcessBefore = live,
+                    ProcessAction = action,
+                    IntendedPriority = level is { } l ? ProcessThrottler.ToPriorityClass(l) : null,
+                    Activation = [],
+                    NoOp = false,
+                });
+            }
+        }
+
+        return new EngagePlan { Profile = "resync", CatalogVersion = catalogVersion, Steps = steps };
+    }
+
+    /// <summary>
+    /// Re-applies the drifted process steps by APPENDING to the session that is already open.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// NOT a second Engage, and Engage is not reachable for this: it refuses while dirty, and if that guard
+    /// were relaxed it would mint a new session id, overwrite <c>ActiveSessionId</c> — orphaning the first
+    /// session from Restore and Recover, which both read only that field — and, if it found nothing to do,
+    /// clear <c>IsDirty</c> while the first session's changes were still on the machine.
+    /// </para>
+    /// <para>
+    /// LIMITED TO PROCESSES BY CONSTRUCTION, via <see cref="DriftItem.Resyncable"/>. A second
+    /// <c>applying</c> record for a target the session already covers destroys the undo:
+    /// <see cref="PendingSteps"/> has no per-target dedupe and returns both, revert orders
+    /// <c>ThenByDescending(StepId)</c> so the newer record reverts FIRST and writes back the drifted value,
+    /// and the original record then sees a value matching neither its intent nor its prior and takes
+    /// <c>conflict-kept-current</c> — leaving the machine on a value Quiesce wrote while
+    /// <see cref="RevertResult.Clean"/> reports true and <c>IsDirty</c> is cleared. A process step cannot
+    /// reach that state: a close journals no undo at all, and a re-throttle only ever covers a NEW identity
+    /// that no existing record describes.
+    /// </para>
+    /// <para>
+    /// NEVER WRITES <c>state.json</c>. <c>IsDirty</c> is already true and stays true; the active session is
+    /// already this one. That single omission is what makes a refused resync provably harmless, and it also
+    /// means a resync can never raise a reboot warning — a close and a throttle take effect immediately.
+    /// </para>
+    /// <para>
+    /// APPENDS NO NEW RECORD TYPE. <c>JournalStore</c> deserializes the discriminator OUTSIDE the
+    /// <c>JsonException</c> guard that protects the schemaVersion probe, so an unknown <c>record</c> value
+    /// throws a raw <c>JsonException</c> that <see cref="RevertSession"/>'s catch clauses do not cover — an
+    /// older or side-by-side build would then be unable to revert the machine AT ALL. The fact that a step
+    /// came from a resync rides in its <c>Target</c> string instead, which also makes it visible in
+    /// Restore's own messages.
+    /// </para>
+    /// </remarks>
+    public ResyncResult Resync(Guid sessionId, EngagePlan plan, string initiator)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+
+        var state = _state.Load();
+
+        if (!state.IsDirty)
+        {
+            return Refused(sessionId, "Nothing is engaged, so there is nothing to be out of sync with.");
+        }
+
+        if (state.ActiveSessionId != sessionId)
+        {
+            return Refused(
+                sessionId,
+                $"Session {sessionId:D} is not the active session. A resync only ever adds to the session " +
+                "Quiesce is currently holding.");
+        }
+
+        var sessionDir = paths.SessionDir(sessionId);
+
+        JournalReadResult read;
+        try
+        {
+            read = JournalReader.Read(Path.Combine(sessionDir, "journal.jsonl"));
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return Refused(sessionId, $"No journal for session {sessionId:D}, so there is nothing to add to.");
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            throw new StateUnreadableException(Path.Combine(sessionDir, "journal.jsonl"), ex);
+        }
+
+        // What this session closed before a restart is not what is running after one. Those applications
+        // came back because the user signed in, and re-closing them would be Quiesce acting on a comparison
+        // it has no business making.
+        if (read.Records.OfType<SessionStartRecord>().FirstOrDefault() is { } start
+            && !QuiescePaths.IsSameBoot(start.BootId))
+        {
+            return Refused(
+                sessionId,
+                "This session was applied before the last restart, so what it closed is not what is " +
+                "running now. Restore, then Engage again.");
+        }
+
+        var effective = plan.EffectiveSteps.ToList();
+        if (effective.Count == 0)
+        {
+            return Refused(sessionId, "Nothing to resync.");
+        }
+
+        // Every step id must be past every id the journal already uses. PendingSteps filters reverted ids
+        // through a HashSet<int>, so one RevertedRecord would otherwise discharge two records sharing a
+        // number - and the second would never be undone.
+        var nextId = NextStepId(read.Records);
+        if (effective.Any(s => s.StepId < nextId))
+        {
+            return Refused(
+                sessionId,
+                "This resync plan was built against an older state of the journal. Re-check and try again.");
+        }
+
+        var acted = 0;
+        var notes = new List<string>();
+        var failures = new List<string>();
+
+        using var journal = JournalWriter.Open(sessionDir);
+
+        foreach (var step in effective)
+        {
+            if (step.Op is not ProcessOpSpec op)
+            {
+                // Unreachable through PlanResync, which only emits process steps. Refused rather than
+                // ignored, because a silently skipped step in a mutation path is how a report ends up
+                // describing work that did not happen.
+                failures.Add($"step {step.StepId}: only process steps can be resynced.");
+                continue;
+            }
+
+            // The same ApplyProcess Engage uses, so the guardrail re-check, the write-ahead ordering and
+            // the AppliedWithoutUndo accounting are one implementation rather than two.
+            var outcome = ApplyProcess(journal, revertScript: null, step, op, FaultInjector.None);
+
+            if (outcome.Note is { } note)
+            {
+                notes.Add(note);
+            }
+
+            if (outcome.Failure is { } failure)
+            {
+                // No entry rollback. The entry was already applied and still is; unwinding it here would
+                // undo work this resync did not do.
+                failures.Add($"step {step.StepId}: {failure}");
+                continue;
+            }
+
+            if (outcome.Applied is not null || outcome.AppliedWithoutUndo)
+            {
+                acted++;
+            }
+        }
+
+        return new ResyncResult
+        {
+            SessionId = sessionId,
+            Acted = acted,
+            Notes = notes,
+            Failures = failures,
+        };
+    }
+
+    /// <summary>
+    /// Maps a journalled priority name back to the catalog throttle level that produced it.
+    /// </summary>
+    /// <remarks>
+    /// Only the two levels the catalog can express, and false for anything else. <c>ThrottleLevel</c>
+    /// deliberately has no value above Normal, so a journalled priority outside this pair means either a
+    /// journal from a build that knew more levels or a hand-edited one — and in both cases refusing is
+    /// right. Coercing an unknown name to BelowNormal would silently change a process's priority to
+    /// something no session ever asked for.
+    /// </remarks>
+    private static bool TryThrottleLevel(string? journalledPriority, out ThrottleLevel level)
+    {
+        switch (journalledPriority)
+        {
+            case nameof(ProcessPriorityClass.BelowNormal):
+                level = ThrottleLevel.BelowNormal;
+                return true;
+
+            case nameof(ProcessPriorityClass.Idle):
+                level = ThrottleLevel.Idle;
+                return true;
+
+            default:
+                level = default;
+                return false;
+        }
+    }
+
+    private static ResyncResult Refused(Guid sessionId, string reason) => new()
+    {
+        SessionId = sessionId,
+        Acted = 0,
+        RefusedReason = reason,
+    };
+
+    /// <summary>
+    /// The scope recorded for a journalled step, so a resync record carries the same one.
+    /// </summary>
+    /// <remarks>
+    /// Read back rather than assumed. <c>Recover</c> decides whether to auto-revert a session by asking
+    /// whether ANY pending step is <see cref="TweakScope.Session"/>, so a resync record that guessed
+    /// <c>Session</c> for a <c>Persistent</c> session would change what a reboot does to the whole thing.
+    /// Defaults to <c>Session</c> only if the step cannot be found, which the caller's own plan makes
+    /// impossible.
+    /// </remarks>
+    private TweakScope ScopeOfStep(Guid sessionId, int stepId)
+    {
+        try
+        {
+            var records = JournalReader.Read(
+                Path.Combine(paths.SessionDir(sessionId), "journal.jsonl")).Records;
+
+            return records.OfType<ApplyingRecord>().FirstOrDefault(r => r.StepId == stepId)?.Scope
+                ?? TweakScope.Session;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException
+                                      or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            return TweakScope.Session;
+        }
+    }
+
+    /// <summary>
+    /// One past the highest step id the journal has ever used, planned or applied.
+    /// </summary>
+    /// <remarks>
+    /// Both record types, not just <c>applying</c>: a <c>planned</c> record with no matching <c>applying</c>
+    /// one exists for every step that was elided or refused, and reusing its number would make the journal
+    /// describe two different steps under one id.
+    /// </remarks>
+    private static int NextStepId(IReadOnlyList<JournalRecord> records)
+    {
+        var highest = 0;
+
+        foreach (var record in records)
+        {
+            var id = record switch
+            {
+                PlannedRecord p => p.StepId,
+                ApplyingRecord a => a.StepId,
+                _ => 0,
+            };
+
+            if (id > highest)
+            {
+                highest = id;
+            }
+        }
+
+        return highest + 1;
+    }
+
     /// <summary>
     /// Whether the live probe holds what the step intended to write. The drift predicate for registry.
     /// </summary>
@@ -2339,6 +2695,7 @@ public sealed class TransactionEngine(
             Resyncable = !rebooted,
             NotResyncableReason = rebooted ? NotResyncable.BeforeRestart : null,
             RecordedProcess = prior,
+            RecordedIntendedPriority = step.IntendedPriority,
             LiveProcesses = restarted,
         });
     }

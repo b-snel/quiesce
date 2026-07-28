@@ -42,6 +42,16 @@ public partial class DashboardPage
     private bool CanRestore => _state.MachineState.IsDirty || _state.StateUnknown;
 
     /// <summary>
+    /// Whether there is drift Quiesce will actually put back.
+    /// </summary>
+    /// <remarks>
+    /// Keyed on the resyncable half specifically, not on <c>Drifted</c>. A machine whose only drift is a
+    /// registry value someone changed has drifted and has nothing to resync, and a button offered there
+    /// would either do nothing or — worse — imply Quiesce was about to overwrite the user's value.
+    /// </remarks>
+    private bool CanResync => _state.Drift is { Unknown: false } drift && drift.Resyncable.Count > 0;
+
+    /// <summary>
     /// Renders lines as a bullet block, or contributes nothing at all when there are none.
     /// </summary>
     /// <remarks>
@@ -164,6 +174,10 @@ public partial class DashboardPage
         RecheckButton.Visibility = _state.MachineState.IsDirty
             ? Visibility.Visible
             : Visibility.Collapsed;
+
+        // Only when there is drift Quiesce will act on. Reported-only drift gets no button, because there is
+        // nothing for one to do - the banner already says what changed and that Quiesce is leaving it alone.
+        ResyncButton.Visibility = CanResync ? Visibility.Visible : Visibility.Collapsed;
 
         var applied = _state.Plan?.Steps.Count(s => s.NoOp) ?? 0;
         var pending = _state.Plan?.EffectiveSteps.Count() ?? 0;
@@ -360,6 +374,96 @@ public partial class DashboardPage
         }
     }
 
+    /// <summary>
+    /// Re-closes what came back, through the same preflight and the same lock as Engage.
+    /// </summary>
+    /// <remarks>
+    /// The plan is re-derived from a FRESH drift check rather than reusing the one on <c>_state</c>: what is
+    /// running now is what will be closed, and the state on this page may be minutes old. The preflight then
+    /// renders exactly those steps — the same property Engage has, which is why the dialog takes a real
+    /// <c>EngagePlan</c> and not a summary model.
+    /// <para>
+    /// No System Restore point. Engage takes one because it is about to write registry values and reconfigure
+    /// services; a resync only closes and throttles processes, and a restore point cannot reopen an
+    /// application either.
+    /// </para>
+    /// </remarks>
+    private async void OnResync(object sender, RoutedEventArgs e)
+    {
+        if (_state.MachineState.ActiveSessionId is not { } sessionId)
+        {
+            ShowResult(ResultTone.Neutral, "Nothing is engaged, so there is nothing to be out of sync with.");
+            return;
+        }
+
+        SetBusy(true);
+        try
+        {
+            var engine = AppState.CreateEngine();
+
+            var plan = await Task.Run(() => engine.PlanResync(engine.DetectDrift(sessionId)));
+
+            if (!plan.EffectiveSteps.Any())
+            {
+                ShowResult(ResultTone.Good, "Nothing to resync — the machine already matches this session.");
+                Refresh();
+                return;
+            }
+
+            App.Mutating = true;
+
+            var dialog = new PreflightDialog(plan, restorePoint: null) { Owner = Window.GetWindow(this) };
+            if (dialog.ShowDialog() != true)
+            {
+                ShowResult(ResultTone.Neutral, "Cancelled. Nothing was changed.");
+                return;
+            }
+
+            var result = await Task.Run(() =>
+                MutatingLock.TryRun(() => engine.Resync(sessionId, plan, "resync"), out var resynced)
+                    ? resynced
+                    : null);
+
+            if (result is null)
+            {
+                ShowResult(ResultTone.Bad, MutatingLock.BusyMessage);
+                return;
+            }
+
+            if (result.Refused)
+            {
+                // A refusal means literally nothing happened - no journal record, no mutation, no state
+                // write - so it is reported as the neutral outcome it is rather than as a failure.
+                ShowResult(ResultTone.Neutral, result.RefusedReason!);
+            }
+            else
+            {
+                var message =
+                    $"Resynced. {result.Acted} application{(result.Acted == 1 ? "" : "s")} asked to close " +
+                    "again." +
+                    (result.Failures.Count > 0
+                        ? $" {result.Failures.Count} could not be done:\n" +
+                          string.Join("\n", result.Failures.Select(f => "  • " + f))
+                        : string.Empty);
+
+                ShowResult(
+                    result.Failures.Count > 0 ? ResultTone.Bad : ResultTone.Good,
+                    message + Bullets(result.Notes));
+            }
+
+            Refresh();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            ShowResult(ResultTone.Bad, ex.Message);
+        }
+        finally
+        {
+            App.Mutating = false;
+            SetBusy(false);
+        }
+    }
+
     private async void OnRestore(object sender, RoutedEventArgs e)
     {
         SetBusy(true);
@@ -478,6 +582,7 @@ public partial class DashboardPage
         // Disabled while busy like the other two, but its enablement is not a third state expression - a
         // re-check is always available while engaged, because it changes nothing.
         RecheckButton.IsEnabled = !busy;
+        ResyncButton.IsEnabled = !busy && CanResync;
     }
 
     /// <summary>

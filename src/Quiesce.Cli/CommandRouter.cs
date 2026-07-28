@@ -29,6 +29,7 @@ public static class CommandRouter
         new("print-plan",    "M1", "Show exactly what Engage would do. Changes nothing. This is dry-run."),
         new("engage",        "M1", "Apply the active profile, journalling every change before it is made."),
         new("restore",       "M1", "Revert the current session from its journal."),
+        new("resync",        "M7", "Re-close applications that came back after Engage. --apply to act; default is a report."),
         new("revert-all",    "M1", "Revert every incomplete session found on disk. The panic button."),
         new("recover",       "M1", "Finish an interrupted apply or revert. Run automatically at boot/logon."),
         new("verify-revert", "M1", "Apply, immediately revert, and assert the machine is byte-identical."),
@@ -72,6 +73,11 @@ public static class CommandRouter
                 "print-plan" => Quiesce.Cli.Verbs.PrintPlan(env),
                 "engage" => Quiesce.Cli.Verbs.Engage(env, GetOption(options, "--fault-inject")),
                 "restore" => Quiesce.Cli.Verbs.Restore(env),
+
+                // Report by default, act only with --apply. The opposite of engage, deliberately: engage is
+                // something the user goes looking for, whereas `resync` is what someone types to find out
+                // WHETHER the machine drifted - and that question must not close their browser.
+                "resync" => Quiesce.Cli.Verbs.Resync(env, apply: options.Contains("--apply")),
                 "revert-all" => Quiesce.Cli.Verbs.RevertAll(env),
                 "recover" => Quiesce.Cli.Verbs.Recover(env),
                 "verify-revert" => Quiesce.Cli.Verbs.VerifyRevert(env),

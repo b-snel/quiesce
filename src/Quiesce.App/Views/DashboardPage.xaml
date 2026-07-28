@@ -26,6 +26,17 @@
                            Padding="28,10"
                            Margin="12,0,0,0"
                            Click="OnRestore" />
+                <!-- Shown only when there is drift Quiesce will actually act on. A Resync button that was
+                     always present would be a button that usually does nothing, and the one thing it does
+                     is close applications. -->
+                <ui:Button x:Name="ResyncButton" x:FieldModifier="public"
+                           Content="Resync"
+                           Appearance="Primary"
+                           FontSize="16"
+                           Padding="28,10"
+                           Margin="12,0,0,0"
+                           Visibility="Collapsed"
+                           Click="OnResync" />
                 <!-- Explicit, because there is no background drift check and there is not going to be one:
                      a periodic sweep would enumerate every process and query the SCM on a schedule,
                      including while a game is fullscreen, which is the one time Quiesce should do nothing

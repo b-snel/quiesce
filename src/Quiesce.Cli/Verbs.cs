@@ -442,6 +442,100 @@ internal static class Verbs
         });
     }
 
+    /// <summary>
+    /// Reports drift, and with <c>--apply</c> re-closes what came back.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// REPORTS BY DEFAULT. `engage` is something the user goes looking for; `resync` is what someone types
+    /// to find out WHETHER the machine drifted, and that question must not close their browser as a side
+    /// effect. So the bare verb is a dry run and the mutation needs a word.
+    /// </para>
+    /// <para>
+    /// Shares <see cref="PrintDrift"/> with `inventory` and the engine's own detector with the GUI, so the
+    /// three cannot give different answers about the same machine.
+    /// </para>
+    /// </remarks>
+    public static int Resync(CliEnvironment env, bool apply)
+    {
+        ArgumentNullException.ThrowIfNull(env);
+
+        if (env.RunAclPreflight(Console.Error) is var acl && acl != CommandRouter.ExitCode.Ok)
+        {
+            return acl;
+        }
+
+        QuiesceState state;
+        try
+        {
+            state = new StateStore(env.Paths.DataRoot).Load();
+        }
+        catch (StateUnreadableException ex)
+        {
+            Console.Error.WriteLine($"quiesce: {ex.Message}");
+            return CommandRouter.ExitCode.NotElevated;
+        }
+
+        if (!state.IsDirty || state.ActiveSessionId is not { } sessionId)
+        {
+            Console.WriteLine("Nothing is engaged, so there is nothing to be out of sync with.");
+            return CommandRouter.ExitCode.Ok;
+        }
+
+        var engine = env.CreateEngine();
+        var drift = engine.DetectDrift(sessionId);
+
+        if (drift.Unknown)
+        {
+            Console.Error.WriteLine($"quiesce: {drift.UnknownReason}");
+            return CommandRouter.ExitCode.NotElevated;
+        }
+
+        if (!drift.Any)
+        {
+            Console.WriteLine($"In sync. The machine still matches session {sessionId:D}.");
+            return CommandRouter.ExitCode.Ok;
+        }
+
+        PrintDrift(drift);
+
+        if (!apply)
+        {
+            Console.WriteLine(
+                drift.Resyncable.Count > 0
+                    ? "\nNothing was changed. Run `quiesce resync --apply` to close these again — " +
+                      "SAVE YOUR WORK FIRST, because Quiesce does not reopen anything."
+                    : "\nNothing here is something Quiesce will put back, so --apply would do nothing.");
+
+            return CommandRouter.ExitCode.Ok;
+        }
+
+        return WithMutex(() =>
+        {
+            var result = engine.Resync(sessionId, engine.PlanResync(drift), "resync");
+
+            if (result.Refused)
+            {
+                Console.Error.WriteLine($"quiesce: {result.RefusedReason}");
+                return CommandRouter.ExitCode.UsageError;
+            }
+
+            Console.WriteLine($"resynced: {result.Acted} process(es) acted on in session {result.SessionId:D}");
+
+            foreach (var note in result.Notes)
+            {
+                Console.WriteLine($"  note: {note}");
+            }
+
+            foreach (var failure in result.Failures)
+            {
+                Console.Error.WriteLine($"  FAILED: {failure}");
+            }
+
+            return result.Failures.Count > 0 ? 1 : CommandRouter.ExitCode.Ok;
+        });
+    }
+
     public static int Recover(CliEnvironment env)
     {
         return WithMutex(() =>

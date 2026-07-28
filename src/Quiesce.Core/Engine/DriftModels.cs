@@ -71,6 +71,16 @@ public sealed record DriftItem
     public ProcessPrior? RecordedProcess { get; init; }
 
     /// <summary>
+    /// The priority the session throttled to, as the journal spells it. Null for a close.
+    /// </summary>
+    /// <remarks>
+    /// Carried so a resync re-throttles to what the SESSION chose rather than to a default. Reconstructing
+    /// it from <see cref="ProcessPrior.PriorityClass"/> would be reading the prior — the value the throttle
+    /// moved away from — and re-applying that would restore full priority while reporting a throttle.
+    /// </remarks>
+    public string? RecordedIntendedPriority { get; init; }
+
+    /// <summary>
     /// The live processes matching a returned or restarted program. Empty for every other kind.
     /// </summary>
     /// <remarks>
@@ -146,4 +156,47 @@ public sealed record DriftReport
         AppliedBeforeLastRestart = false,
         CheckedUtc = checkedUtc,
     };
+}
+
+/// <summary>
+/// What a resync did. Deliberately not a <see cref="EngageResult"/>.
+/// </summary>
+/// <remarks>
+/// A resync has no session id to report — it appends to the session that already exists — and no rolled-back
+/// entries, because the entries it touches were already applied and still are. Reusing
+/// <see cref="EngageResult"/> would have meant a <c>SessionId</c> field that looks new and is not, which is
+/// exactly the confusion the whole design is built to avoid.
+/// </remarks>
+public sealed record ResyncResult
+{
+    /// <summary>The session that was added to. Never a new one.</summary>
+    public required Guid SessionId { get; init; }
+
+    /// <summary>How many processes were actually closed or throttled.</summary>
+    public required int Acted { get; init; }
+
+    /// <summary>
+    /// Non-null when the resync was refused before doing anything at all.
+    /// </summary>
+    /// <remarks>
+    /// When this is set, NOTHING happened: no journal record, no mutation, no state write. That is the
+    /// property the refusals are built around, and it is why the message can say "nothing was done"
+    /// without qualification.
+    /// </remarks>
+    public string? RefusedReason { get; init; }
+
+    /// <summary>
+    /// Everything the user has to be told: what closed and will not reopen, what declined to close.
+    /// </summary>
+    /// <remarks>
+    /// Carries the same content <see cref="EngageResult.Notes"/> does, and for the same reason — a closed
+    /// application is the one thing this product does that its undo does not cover, so it is said at the
+    /// moment it happens.
+    /// </remarks>
+    public IReadOnlyList<string> Notes { get; init; } = [];
+
+    /// <summary>Steps that failed, with the reason. A resync failure never rolls back an entry.</summary>
+    public IReadOnlyList<string> Failures { get; init; } = [];
+
+    public bool Refused => RefusedReason is not null;
 }
