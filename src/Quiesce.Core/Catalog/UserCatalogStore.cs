@@ -46,6 +46,28 @@ public sealed record UserEntryResult
     public required IReadOnlyList<string> AddedImageNames { get; init; }
 }
 
+/// <summary>
+/// What one gesture on the merged page authored. Null means "already covered; nothing written".
+/// </summary>
+/// <remarks>
+/// Two ids rather than one, deliberately visible to the caller, because they are two different promises: the
+/// close is <c>Session</c>-scoped and Restore does NOT reopen what it closed, while the sign-in preference is
+/// <c>Persistent</c> and Restore puts it back exactly. A result type that hid the distinction would invite a
+/// confirmation message that made one of those two sentences false.
+/// </remarks>
+public sealed record CombinedEntryResult
+{
+    public required string? CloseEntryId { get; init; }
+
+    public required string? StartupEntryId { get; init; }
+
+    /// <summary>Every id this call wrote, for enabling them in the profile.</summary>
+    public IReadOnlyList<string> WrittenIds =>
+        [.. new[] { CloseEntryId, StartupEntryId }.Where(id => id is not null).Select(id => id!)];
+
+    public bool WroteNothing => CloseEntryId is null && StartupEntryId is null;
+}
+
 public sealed class UserCatalogStore(string dataRoot)
 {
     public const string FileName = "user-apps.json";
@@ -227,6 +249,91 @@ public sealed class UserCatalogStore(string dataRoot)
     /// and refreshing is not cosmetic here — the lean bytes are derived from the blob observed at
     /// authoring time, so re-adding after the entry was toggled by hand rewrites them to match.
     /// </remarks>
+    /// <summary>
+    /// Authors the close entry and the sign-in entry in ONE validated write. Both, or neither.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// One <c>Save</c>, not two calls. <see cref="Add"/> and <see cref="AddStartupDisable"/> each do their own
+    /// Load-then-Save, so a two-call gesture can leave the close entry durably written while reporting
+    /// failure — and the half-written case is reachable, not theoretical:
+    /// <c>StartupItemDiscovery.EntryFor</c> throws for a logon task, and <c>CatalogLoader.ValidateRegistry</c>
+    /// refuses an empty value name, which an HKCU <c>Run</c> DEFAULT value produces and HKCU is
+    /// standard-user-writable.
+    /// </para>
+    /// <para>
+    /// Composed from the two single-purpose methods rather than reimplementing either: the extend-rather-than-
+    /// duplicate behaviour they carry is what fixed the four-presses-four-entries bug, and a second write path
+    /// that did not share it would reintroduce it. They are called against a snapshot and the result is
+    /// written once, which is what makes the atomicity real rather than nominal.
+    /// </para>
+    /// <para>
+    /// TWO ENTRIES, NOT ONE, and the caller must say so: a close is <c>Session</c>-scoped and has no undo,
+    /// while a sign-in preference is <c>Persistent</c> and Restore puts it back exactly. Presenting them as
+    /// one thing would make one of those two sentences false.
+    /// </para>
+    /// </remarks>
+    public CombinedEntryResult AddAppAndStartup(
+        AppCandidate? candidate,
+        ProcessAction action,
+        ThrottleLevel? throttleTo,
+        Startup.StartupItem? startupItem,
+        CatalogFile? shipped)
+    {
+        if (candidate is null && startupItem is null)
+        {
+            throw new ArgumentException("Nothing to author: both the application and the sign-in entry are null.");
+        }
+
+        // Validated and composed BEFORE anything is written. Every refusal below happens with the file
+        // untouched, which is the whole point of the method.
+        var beforeAny = Load();
+        var taken = (shipped?.Entries.Select(e => e.Id) ?? [])
+            .Concat(beforeAny?.Entries.Select(e => e.Id) ?? [])
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        CatalogEntry? closeEntry = null;
+        CatalogEntry? startupEntry = null;
+
+        if (candidate is not null && FindEquivalent(beforeAny, candidate, action) is null)
+        {
+            closeEntry = EntryFor(candidate, action, throttleTo, taken);
+            taken.Add(closeEntry.Id);
+        }
+
+        if (startupItem is not null && FindByRegistryTarget(
+                beforeAny,
+                (RegistryOpSpec)Startup.StartupItemDiscovery.EntryFor(startupItem).Ops[0]) is null)
+        {
+            // Throws for a logon task, and it throws HERE - before the write - which is the reachable
+            // half-written case this method exists to close.
+            startupEntry = Startup.StartupItemDiscovery.EntryFor(startupItem, taken);
+        }
+
+        if (closeEntry is null && startupEntry is null)
+        {
+            return new CombinedEntryResult { CloseEntryId = null, StartupEntryId = null };
+        }
+
+        Save(new CatalogFile
+        {
+            SchemaVersion = CatalogLoader.SupportedSchemaVersion,
+            CatalogVersion = "user",
+            Entries =
+            [
+                .. beforeAny?.Entries ?? [],
+                .. closeEntry is null ? Array.Empty<CatalogEntry>() : [closeEntry],
+                .. startupEntry is null ? Array.Empty<CatalogEntry>() : [startupEntry],
+            ],
+        });
+
+        return new CombinedEntryResult
+        {
+            CloseEntryId = closeEntry?.Id,
+            StartupEntryId = startupEntry?.Id,
+        };
+    }
+
     public UserEntryResult AddStartupDisable(Startup.StartupItem item, CatalogFile? shipped)
     {
         ArgumentNullException.ThrowIfNull(item);
