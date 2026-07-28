@@ -10,6 +10,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Quiesce.Core\Quiesce.Core.csproj" />
+    <!-- ReferenceOutputAssembly=false: the CLI contract tests spawn quiesce.exe as a process
+         rather than linking it, but the build order must still guarantee the exe exists. -->
+    <ProjectReference Include="..\..\src\Quiesce.Cli\Quiesce.Cli.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>

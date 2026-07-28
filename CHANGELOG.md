@@ -20,3 +20,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   a CI grep that catches strings and reflection. Quiesce contains zero code-injection primitives by construction.
 - **M0** — CI: build, test, CLI exit-code contract, catalog JSON validation, guardrail grep, and a check that no
   signing material is ever committed.
+- **M0** — App icon from the ripple logo (16–256px `.ico`, plus 512px light/dark PNGs for in-app use).
+- **M1** — The reversibility engine. Write-ahead journal (append-only, flushed to disk per record, exclusive
+  lock, torn-final-line tolerant, hard refusal of future schema versions), tri-state registry priors
+  (value-present / value-absent / key-absent), and a `TransactionEngine` doing Plan → Apply → Verify → Revert.
+- **M1** — Working verbs: `inventory`, `print-plan`, `engage`, `restore`, `revert-all`, `recover`,
+  `verify-revert`, plus `--fault-inject=afterStep<N>` for deterministic crash testing.
+- **M1** — 66 tests covering the guarantees that matter: absent restores to absent (never `0`), created keys are
+  removed unless someone else used them, already-lean values are elided and never "restored", a value changed by
+  someone else after apply is kept rather than clobbered, multi-op entries roll back whole, an unloaded user hive
+  defers instead of silently claiming success, and revert works with the catalog deleted.
+
+### Fixed
+
+- **M1** — `revert-all` refused to run when the catalog was missing, even though revert reads only the journal.
+  The panic button must work with the catalog gone; the CLI now resolves the catalog lazily. Regression-tested.
+- **M1** — An early elevation gate refused *revert* without admin, which could strand a user with an engaged
+  machine they were unable to undo. Only `engage` is gated now: Quiesce is strict about creating obligations and
+  never refuses to discharge one.

@@ -23,7 +23,7 @@ public static class CommandRouter
 
     private sealed record Verb(string Name, string Milestone, string Summary);
 
-    private static readonly Verb[] Verbs =
+    private static readonly Verb[] VerbTable =
     [
         new("inventory",     "M1", "Print a read-only report of services, processes, and current tweak state."),
         new("print-plan",    "M1", "Show exactly what Engage would do. Changes nothing. This is dry-run."),
@@ -50,7 +50,7 @@ public static class CommandRouter
             return ExitCode.Ok;
         }
 
-        var verb = Verbs.FirstOrDefault(v => v.Name.Equals(args[0], StringComparison.OrdinalIgnoreCase));
+        var verb = VerbTable.FirstOrDefault(v => v.Name.Equals(args[0], StringComparison.OrdinalIgnoreCase));
         if (verb is null)
         {
             Console.Error.WriteLine($"quiesce: unknown command '{args[0]}'.");
@@ -58,8 +58,64 @@ public static class CommandRouter
             return ExitCode.UsageError;
         }
 
+        var options = args.Skip(1).ToArray();
+
+        try
+        {
+            var env = CliEnvironment.Create();
+
+            return verb.Name switch
+            {
+                "inventory" => Quiesce.Cli.Verbs.Inventory(env),
+                "print-plan" => Quiesce.Cli.Verbs.PrintPlan(env),
+                "engage" => Quiesce.Cli.Verbs.Engage(env, GetOption(options, "--fault-inject")),
+                "restore" => Quiesce.Cli.Verbs.Restore(env),
+                "revert-all" => Quiesce.Cli.Verbs.RevertAll(env),
+                "recover" => Quiesce.Cli.Verbs.Recover(env),
+                "verify-revert" => Quiesce.Cli.Verbs.VerifyRevert(env),
+                _ => NotImplemented(verb),
+            };
+        }
+        catch (Core.Engine.FaultInjectedException)
+        {
+            // Simulated crash: die abruptly, exactly like the real thing. `recover` cleans up.
+            throw;
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.Error.WriteLine($"quiesce: {ex.Message}");
+            return ExitCode.UsageError;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or Core.Catalog.CatalogException or Core.Journal.JournalFormatException)
+        {
+            Console.Error.WriteLine($"quiesce: {ex.Message}");
+            return ExitCode.UsageError;
+        }
+    }
+
+    private static int NotImplemented(Verb verb)
+    {
         Console.Error.WriteLine($"quiesce: '{verb.Name}' is not implemented yet (planned for {verb.Milestone}).");
         return ExitCode.NotImplemented;
+    }
+
+    /// <summary>Reads <c>--name=value</c> or <c>--name value</c>; null when absent.</summary>
+    private static string? GetOption(string[] options, string name)
+    {
+        for (var i = 0; i < options.Length; i++)
+        {
+            if (options[i].StartsWith(name + "=", StringComparison.OrdinalIgnoreCase))
+            {
+                return options[i][(name.Length + 1)..];
+            }
+
+            if (options[i].Equals(name, StringComparison.OrdinalIgnoreCase) && i + 1 < options.Length)
+            {
+                return options[i + 1];
+            }
+        }
+
+        return null;
     }
 
     private static bool IsHelpFlag(string arg) =>
@@ -79,8 +135,8 @@ public static class CommandRouter
         Console.WriteLine();
         Console.WriteLine("COMMANDS");
 
-        var width = Verbs.Max(v => v.Name.Length);
-        foreach (var v in Verbs)
+        var width = VerbTable.Max(v => v.Name.Length);
+        foreach (var v in VerbTable)
         {
             Console.WriteLine($"  {v.Name.PadRight(width)}  {v.Summary}");
         }

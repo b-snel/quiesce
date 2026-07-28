@@ -11,8 +11,15 @@
          GUI+broker design doubles the work, and the LPE concern that motivates the split is
          neutralised by installing to an admin-only path (verified by ACL check at startup). -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <!-- TODO(M2): <ApplicationIcon>Assets\quiesce.ico</ApplicationIcon> -->
+    <ApplicationIcon>Assets\quiesce.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 512px logos for in-app use (About page, tray). The .ico is the dark logo at
+         16/24/32/48/64/128/256 - the glowing rings read on both light and dark taskbars. -->
+    <Resource Include="Assets\logo-dark.png" />
+    <Resource Include="Assets\logo-light.png" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Quiesce.Core\Quiesce.Core.csproj" />
