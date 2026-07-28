@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Quiesce.Cli</RootNamespace>
+    <!-- quiesce.exe is the panic-revert path (recovery net 3) and the home of every CLI verb.
+         The verbs live here and NOT in Quiesce.App because a WinExe with requireAdministrator
+         has no attached console and no exit code observable by the launching shell, which would
+         make every CLI-based acceptance test unrunnable by construction. -->
+    <AssemblyName>quiesce</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Quiesce.Core\Quiesce.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+    <PackageReference Include="Serilog.Extensions.Logging" />
+    <PackageReference Include="Serilog.Sinks.File" />
+  </ItemGroup>
+
+</Project>

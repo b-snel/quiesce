@@ -1,0 +1,28 @@
+; Quiesce guardrails, enforced at compile time by Microsoft.CodeAnalysis.BannedApiAnalyzers.
+; The CI grep in .github/workflows/ci.yml is the other half of this gate: the analyzer catches
+; real references, the grep catches strings, comments and reflective use.
+;
+; Format: T:Type, M:Method, P:Property, F:Field -- one per line, optional ';' message.
+
+; --- Anti-cheat: Quiesce must contain zero code-injection primitives. -------------------
+; EasyAntiCheat is installed on the target machine. Kernel anti-cheats treat injection and
+; cross-process memory access against a protected game as cheat behaviour, and EAC bans
+; propagate across every EAC title tied to the hardware ID.
+M:System.Diagnostics.Process.Kill(System.Boolean); Use ProcessCloseOp's graceful WM_CLOSE ladder. Direct Kill bypasses the save-prompt guard.
+
+; --- Never raise a process above ABOVE_NORMAL. -----------------------------------------
+; REALTIME starves dwm.exe, audiodg.exe and the input stack, producing input lag and worse
+; frame pacing while the average-FPS counter goes up, hiding the regression.
+F:System.Diagnostics.ProcessPriorityClass.RealTime; Capped at AboveNormal by design. RealTime starves dwm/audiodg/input.
+
+; --- Service start type must round-trip exactly. ---------------------------------------
+; ServiceController.StartType is get-only AND collapses Automatic-Delayed into Automatic.
+; Four of the target services on this machine are delayed-auto, so a naive round-trip
+; silently converts them and slows every boot. Use ChangeServiceConfig + QueryServiceConfig2.
+T:System.ServiceProcess.ServiceController; Use IServiceControl (ChangeServiceConfig P/Invoke). ServiceController loses DelayedAutostart.
+
+; --- Registry view must be explicit. ---------------------------------------------------
+; The Registry.* statics use RegistryView.Default, which redirects HKLM\SOFTWARE writes into
+; WOW6432Node on a non-x64 build. Always OpenBaseKey(hive, RegistryView.Registry64).
+P:Microsoft.Win32.Registry.LocalMachine; Use RegistryKey.OpenBaseKey(.., RegistryView.Registry64) via IRegistry.
+P:Microsoft.Win32.Registry.CurrentUser; Per-user ops must resolve HKU\<sid> explicitly, not the HKCU alias.

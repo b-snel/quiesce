@@ -1,0 +1,43 @@
+<Project>
+
+  <!-- Common properties for every Quiesce project.
+       WPF- and app-specific properties live in the individual csproj files. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+
+    <!-- Quiesce writes to HKLM and the SCM. A 32-bit build would silently redirect
+         HKLM\SOFTWARE writes into WOW6432Node, so x64 is not negotiable. -->
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AccelerateBuildsInVisualStudio>true</AccelerateBuildsInVisualStudio>
+
+    <Authors>Brian Snelgrove</Authors>
+    <Company>Brian Snelgrove</Company>
+    <Product>Quiesce</Product>
+    <RepositoryUrl>https://github.com/b-snel/quiesce</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <!-- Tag-driven semver. No tags yet -> 0.0.0-alpha.0.N, which is correct for pre-M7. -->
+  <ItemGroup>
+    <PackageReference Include="MinVer" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Compile-time half of the anti-injection guardrail. The CI grep in ci.yml is the
+       other half: this catches direct references, the grep catches strings and comments. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" PrivateAssets="all" />
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.txt" Visible="false" />
+  </ItemGroup>
+
+</Project>

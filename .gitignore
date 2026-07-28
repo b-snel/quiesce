@@ -1,0 +1,48 @@
+## Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+publish/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Visual Studio / Rider / VS Code
+.vs/
+.idea/
+.vscode/
+*.received.*
+
+## Test / coverage
+[Tt]est[Rr]esult*/
+coverage*.json
+coverage*.xml
+*.coverage
+*.trx
+
+## NuGet
+*.nupkg
+*.snupkg
+.nuget/
+
+## Installer output
+installer/[Oo]utput/
+*.exe.sig
+
+## SECURITY: never commit signing material.
+## The Ed25519 private key belongs in the NETSPARKLE_PRIVATE_KEY Actions secret and nowhere else.
+## The PUBLIC key is compiled into the app as a constant and IS committed - that is the point.
+*.pfx
+*.p12
+*.snk
+NetSparkle_Ed25519.priv
+*_private.key
+*.privkey
+
+## Local scratch
+*.log
+*.local.json
+scratch/

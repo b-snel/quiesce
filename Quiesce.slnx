@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Quiesce.App/Quiesce.App.csproj" />
+    <Project Path="src/Quiesce.Cli/Quiesce.Cli.csproj" />
+    <Project Path="src/Quiesce.Core/Quiesce.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Quiesce.Tests/Quiesce.Tests.csproj" />
+  </Folder>
+</Solution>

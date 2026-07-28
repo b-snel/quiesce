@@ -1,0 +1,56 @@
+<Project>
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <!-- Every version is an exact-match bracket on purpose. Quiesce writes to the registry
+       and the SCM; a floated dependency is an unreviewed change to what it writes.
+       All versions verified present on nuget.org 2026-07-27. -->
+  <ItemGroup Label="Build / versioning">
+    <PackageVersion Include="MinVer" Version="[7.0.0]" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="[5.6.0]" />
+  </ItemGroup>
+
+  <ItemGroup Label="UI">
+    <!-- WPF has no ToggleSwitch control and this app is ~50 toggles.
+         Exact-pinned: 4.0.3 / 4.1.0 / 4.2.0 are NuGet-deprecated for critical bugs. -->
+    <PackageVersion Include="WPF-UI" Version="[4.3.0]" />
+    <!-- Tray icon whose ContextMenu is a real WPF ContextMenu, so WPF-UI themes it.
+         Ships only net462 + net10.0-windows7.0 - a reason the net10 TFM was required. -->
+    <PackageVersion Include="H.NotifyIcon.Wpf" Version="[2.4.1]" />
+  </ItemGroup>
+
+  <ItemGroup Label="Platform interop">
+    <!-- Source-generated P/Invoke with correct SafeHandles instead of hand-rolled DllImport. -->
+    <PackageVersion Include="Microsoft.Windows.CsWin32" Version="[0.3.298]" />
+    <!-- ITaskService COM, avoiding schtasks /XML's UTF-16LE requirement and cryptic failures. -->
+    <PackageVersion Include="TaskScheduler" Version="[2.12.2]" />
+    <!-- Out-of-band on .NET. Needed for root\Microsoft\Windows\Defender and ...\DeviceGuard. -->
+    <PackageVersion Include="System.Management" Version="[10.0.10]" />
+  </ItemGroup>
+
+  <ItemGroup Label="Hosting / logging">
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="[10.0.10]" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="[10.0.10]" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="[10.0.10]" />
+    <PackageVersion Include="Serilog.Extensions.Logging" Version="[10.0.0]" />
+    <PackageVersion Include="Serilog.Sinks.File" Version="[7.0.0]" />
+  </ItemGroup>
+
+  <ItemGroup Label="Updates">
+    <PackageVersion Include="NetSparkleUpdater.SparkleUpdater" Version="[3.1.0]" />
+    <PackageVersion Include="NetSparkleUpdater.UI.WPF" Version="[3.1.0]" />
+  </ItemGroup>
+
+  <ItemGroup Label="Tests">
+    <PackageVersion Include="xunit.v3" Version="[3.2.2]" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="[3.1.5]" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="[18.8.1]" />
+    <!-- NSubstitute, not Moq: Moq 4.20.0's SponsorLink read git user.email, hashed it and
+         phoned an endpoint. Avoidable governance risk on a security-sensitive tool. -->
+    <PackageVersion Include="NSubstitute" Version="[6.0.0]" />
+  </ItemGroup>
+
+</Project>

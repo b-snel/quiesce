@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>Quiesce.App</RootNamespace>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>Quiesce</AssemblyName>
+    <IsPackable>false</IsPackable>
+
+    <!-- Whole-app elevation. Justified in the plan: this is a personal tool, a split
+         GUI+broker design doubles the work, and the LPE concern that motivates the split is
+         neutralised by installing to an admin-only path (verified by ACL check at startup). -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- TODO(M2): <ApplicationIcon>Assets\quiesce.ico</ApplicationIcon> -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Quiesce.Core\Quiesce.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WPF-UI" />
+    <PackageReference Include="H.NotifyIcon.Wpf" />
+    <PackageReference Include="NetSparkleUpdater.SparkleUpdater" />
+    <PackageReference Include="NetSparkleUpdater.UI.WPF" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Serilog.Extensions.Logging" />
+    <PackageReference Include="Serilog.Sinks.File" />
+  </ItemGroup>
+
+</Project>
