@@ -85,6 +85,82 @@ public static class Guardrails
         };
 
     /// <summary>
+    /// Registry values Windows itself refuses to let anyone write, via a kernel registry callback.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// These are not permission problems and no amount of privilege helps. UCPD.sys — the User
+    /// Choice Protection Driver — vetoes <c>RegNtPreSetValueKey</c> for an exact, case-insensitive
+    /// (key path, value name) pair. The key stays fully writable and every other value name in it
+    /// is accepted; only the listed name is refused. Elevation, ownership, taking ownership and
+    /// running as SYSTEM all make no difference, and the veto covers deletes as well as writes.
+    /// </para>
+    /// <para>
+    /// Measured on build 26200.8875, 2026-07-28, driver v4.7.0.653342, from an elevated process:
+    /// the pair is refused for DWORD 0, DWORD 1 and REG_SZ, in both cases, to reg.exe and to .NET
+    /// alike; <c>AllowNewsAndInterestsZ</c> in the same key writes fine; <c>AllowNewsAndInterests</c>
+    /// in a different key writes fine. The driver binary contains each name below as a UTF-16
+    /// string, and contains none of the eight targets that accepted writes in the same session.
+    /// </para>
+    /// <para>
+    /// Gated on <see cref="KernelRegistryFilter.IsActive"/> rather than treated as permanent: if a
+    /// later build drops a pair or stops loading the driver, these should quietly start working
+    /// again instead of staying refused on the strength of one observation.
+    /// </para>
+    /// </remarks>
+    public static readonly IReadOnlySet<string> OsVetoedRegistryValues =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // Keyed HIVE\subkey!value, not subkey!value: SOFTWARE\Microsoft\Windows\CurrentVersion\
+            // Explorer\Advanced exists under both HKLM and HKCU, and a hive-blind match would refuse
+            // a machine-wide write on the strength of a per-user observation.
+
+            // Measured denied on the target machine.
+            @"HKLM\SOFTWARE\Policies\Microsoft\Dsh!AllowNewsAndInterests",
+            @"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced!TaskbarDa",
+
+            // Present in the same driver table, not individually measured here. Listed because the
+            // two that WERE measured are in this table and behave identically, and because a tweak
+            // that silently fails is worse than one that declines with a reason. Drop any of these
+            // the moment a write to it is observed succeeding.
+            @"HKCU\Software\Microsoft\Windows\CurrentVersion\Feeds!ShellFeedsTaskbarViewMode",
+            @"HKCU\Software\Microsoft\Windows\CurrentVersion\Feeds!IsFeedsAvailable",
+            @"HKLM\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds!EnableFeeds",
+        };
+
+    /// <summary>
+    /// Decides whether a registry write must be refused before it is ever attempted.
+    /// </summary>
+    /// <remarks>
+    /// Plan-time rather than apply-time on purpose. Attempting the write and reporting the failure
+    /// "works", but it costs a rolled-back entry and a failed Engage on every run, and — because
+    /// <c>SetValue</c> creates the key before writing — it leaves behind an empty key that Quiesce
+    /// is then also refused permission to delete. Declining up front leaves the machine untouched.
+    /// </remarks>
+    /// <returns>True when the write must not be attempted; <paramref name="reason"/> explains why.</returns>
+    public static bool RefuseRegistryWrite(string hive, string subkey, string valueName, out string reason)
+    {
+        ArgumentNullException.ThrowIfNull(hive);
+        ArgumentNullException.ThrowIfNull(subkey);
+        ArgumentNullException.ThrowIfNull(valueName);
+
+        // Membership is checked before the driver probe so the cheap, pure test short-circuits the
+        // SCM round trip for the overwhelming majority of ops, which are not on the list at all.
+        if (OsVetoedRegistryValues.Contains($@"{hive}\{subkey}!{valueName}") && KernelRegistryFilter.IsActive())
+        {
+            reason =
+                $"Windows refuses this write in the kernel. UCPD.sys (the User Choice Protection " +
+                $"Driver) vetoes writes to {subkey}!{valueName} specifically; the key itself is " +
+                "writable and every other value name in it is accepted. Elevation, ownership and " +
+                "running as SYSTEM make no difference, so Quiesce will not attempt it.";
+            return true;
+        }
+
+        reason = string.Empty;
+        return false;
+    }
+
+    /// <summary>
     /// Decides whether a service may be reconfigured or stopped at all.
     /// </summary>
     /// <remarks>

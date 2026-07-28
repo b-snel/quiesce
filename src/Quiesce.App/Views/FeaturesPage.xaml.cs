@@ -53,8 +53,18 @@ public partial class FeaturesPage
             var applied = steps.Count > 0 && steps.All(s => s.NoOp);
             var partial = steps.Count > 0 && !applied && steps.Any(s => s.NoOp);
 
+            // Refusal has to be tested BEFORE the fall-through, or an entry Windows blocks in the
+            // kernel would read "will be applied on Engage" — a promise the tool cannot keep. It is
+            // tested AFTER `applied`, because already-lean steps are never refused and saying
+            // "blocked" about a write that will not happen is equally false.
+            var refused = steps.Count > 0 && steps.All(s => s.RefusedReason is not null);
+            var someRefused = steps.Any(s => s.RefusedReason is not null);
+            var refusalReason = steps.FirstOrDefault(s => s.RefusedReason is not null)?.RefusedReason;
+
             var status = !isEnabled ? "off — not applied, and Engage will skip it"
                 : applied ? "on — already at its lean value"
+                : refused ? "on — REFUSED: Windows will not permit this on this machine"
+                : someRefused ? "on — PARTIALLY refused; the rest will be applied on Engage"
                 : partial ? "on — PARTIALLY applied"
                 : "on — will be applied on Engage";
 
@@ -66,7 +76,11 @@ public partial class FeaturesPage
                 EvidenceBrush = EvidenceBrush(entry.Evidence),
                 ImpactLabel = $"{entry.Impact} impact",
                 TierLabel = entry.RequiresAdmin ? $"tier {entry.RiskTier} · admin" : $"tier {entry.RiskTier}",
-                Breaks = $"Breaks: {entry.WhatItBreaks}",
+                // The reason, not just the verdict: "refused" without the why is the same dead end
+                // as a tweak that quietly did nothing.
+                Breaks = refusalReason is not null
+                    ? $"Refused: {refusalReason}\nBreaks: {entry.WhatItBreaks}"
+                    : $"Breaks: {entry.WhatItBreaks}",
                 StatusLabel = status,
                 IsEnabled = isEnabled,
                 CanToggle = !engaged,

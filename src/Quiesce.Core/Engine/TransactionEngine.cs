@@ -96,6 +96,17 @@ public sealed class TransactionEngine(
             && prior.Value is not null
             && prior.Value.DataEquals(intended);
 
+        // ORDER MATTERS: already-lean beats refused. A value that already holds the target data
+        // needs no write, so no write can be refused, and announcing "Windows blocks this" would be
+        // a plain falsehood about a step that was never going to run. This is not hypothetical -
+        // TaskbarDa is both vetoed AND already lean on the development machine, so getting the
+        // order wrong turns a healthy entry into a scary one.
+        string? refused = null;
+        if (!noOp && Guardrails.RefuseRegistryWrite(op.Hive.ToString(), op.Subkey, op.Value, out var reason))
+        {
+            refused = reason;
+        }
+
         return new PlannedStep
         {
             StepId = stepId,
@@ -108,6 +119,7 @@ public sealed class TransactionEngine(
             IntendedNew = intended,
             Activation = entry.Activation,
             NoOp = noOp,
+            RefusedReason = refused,
         };
     }
 
