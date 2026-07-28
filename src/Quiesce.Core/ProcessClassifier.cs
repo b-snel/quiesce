@@ -15,6 +15,8 @@ public sealed class ProcessClassifier
 {
     private readonly IReadOnlyList<string> _gameDirectories;
     private readonly IReadOnlySet<uint> _serviceHostPids;
+    private readonly IReadOnlySet<int> _selfAndAncestors;
+    private readonly IReadOnlySet<string> _selfHostImagePaths;
 
     /// <param name="gameDirectories">
     /// Directories containing discovered games, from launcher manifests. Overwatch installs to
@@ -26,12 +28,41 @@ public sealed class ProcessClassifier
     /// Built once by the caller. Omitting it means service hosts are not recognised, so callers that
     /// intend to act on processes must supply it.
     /// </param>
+    /// <param name="selfHostImagePaths">
+    /// Images belonging to Quiesce and to whatever launched it, from
+    /// <see cref="ProcessAncestry.SelfHostImagePaths"/>. Supply it via <see cref="ForMachine"/> in
+    /// production; tests pass it explicitly so the host's real ancestry cannot decide a test.
+    /// </param>
     public ProcessClassifier(
         IEnumerable<string>? gameDirectories = null,
-        IReadOnlySet<uint>? serviceHostPids = null)
+        IReadOnlySet<uint>? serviceHostPids = null,
+        IReadOnlySet<string>? selfHostImagePaths = null)
     {
         _gameDirectories = (gameDirectories ?? []).Where(d => !string.IsNullOrWhiteSpace(d)).ToList();
         _serviceHostPids = serviceHostPids ?? new HashSet<uint>();
+        _selfAndAncestors = ProcessAncestry.SelfAndAncestors();
+        _selfHostImagePaths = selfHostImagePaths ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Builds a classifier wired to the live machine, including the self-protection set.
+    /// </summary>
+    /// <remarks>
+    /// The reason this factory exists: the self-protection set needs a process enumeration to resolve
+    /// ancestor image paths, and a constructor that silently skipped it would leave callers
+    /// unprotected by default. Making the safe construction the convenient one is the point.
+    /// </remarks>
+    public static ProcessClassifier ForMachine(
+        IProcessControl processes,
+        IEnumerable<string>? gameDirectories = null,
+        IReadOnlySet<uint>? serviceHostPids = null)
+    {
+        ArgumentNullException.ThrowIfNull(processes);
+
+        return new ProcessClassifier(
+            gameDirectories,
+            serviceHostPids,
+            ProcessAncestry.SelfHostImagePaths(processes));
     }
 
     /// <summary>
@@ -41,6 +72,22 @@ public sealed class ProcessClassifier
     public ProcessClass Classify(ProcessSnapshot process)
     {
         ArgumentNullException.ThrowIfNull(process);
+
+        // FIRST, ahead of everything: Quiesce itself and whatever launched it. Closing your own
+        // launcher kills the process driving the apply and strands the journal; throttling it starves
+        // the apply with the apply. This also means the app hosting a development run is protected
+        // automatically, without a hard-coded list of names to spare — and in production, where
+        // Explorer is the ancestor instead, the same rule leaves ordinary applications closable.
+        // PID match catches self and the direct chain. Image match catches the rest of the host's
+        // family, which is where the real exposure was: measured on the development machine, only 2 of
+        // the host application's 14 processes were ancestors — a Chromium-style app puts its renderers
+        // and helpers beside the spawning process, not above it, so the other 12 read as ordinary and
+        // would have been throttled. Breaking 12 of 14 processes breaks the application.
+        if (_selfAndAncestors.Contains(process.Identity.Pid)
+            || (process.ImagePath is { } path && _selfHostImagePaths.Contains(path)))
+        {
+            return ProcessClass.SelfOrLauncherOfSelf;
+        }
 
         // Name-based, and correctly so: these are protected precisely because of what they ARE, and
         // the check must hold even when the path cannot be read. A process claiming to be csrss is

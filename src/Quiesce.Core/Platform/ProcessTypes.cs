@@ -32,6 +32,16 @@ public enum ProcessClass
     /// <summary>Nothing. Shell, system-critical, compositor, audio graph, UI hosts.</summary>
     NeverTouch,
 
+    /// <summary>
+    /// Nothing. Quiesce itself, or a process in the chain that launched it.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="NeverTouch"/> so the reason shown to the user is the true one rather
+    /// than a generic refusal. Closing the launcher kills the process driving the apply and strands
+    /// the journal; throttling it starves the apply with the apply.
+    /// </remarks>
+    SelfOrLauncherOfSelf,
+
     /// <summary>Nothing. A launcher, its overlay, or an anti-cheat component.</summary>
     LauncherOrAntiCheat,
 
@@ -222,4 +232,15 @@ public interface IProcessControl
     /// <see cref="ProcessCloseResult.Refused"/> is never returned — guardrails are the caller's job.
     /// </returns>
     ProcessCloseResult TryClose(ProcessIdentity identity, TimeSpan timeout, out string diagnosis);
+
+    /// <summary>
+    /// Sets a process's priority class, then verifies by re-reading it.
+    /// </summary>
+    /// <remarks>
+    /// Verification is not paranoia. <c>SetPriorityClass</c> returns success for a request the kernel
+    /// then adjusts or ignores, and a throttle that silently did nothing would still be journalled as
+    /// applied and "restored" later — writing a priority the process never had.
+    /// </remarks>
+    /// <returns>True only when a re-read confirms the new class.</returns>
+    bool TrySetPriority(ProcessIdentity identity, ProcessPriorityClass priority, out string diagnosis);
 }

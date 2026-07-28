@@ -144,6 +144,52 @@ public sealed class Win32ProcessControl : IProcessControl
         return ProcessCloseResult.DeclinedToClose;
     }
 
+    public bool TrySetPriority(ProcessIdentity identity, ProcessPriorityClass priority, out string diagnosis)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+
+        // Identity before anything else. Writing a priority at a recycled PID would silently
+        // reconfigure whatever now owns that number - and on the restore path, would write a captured
+        // prior onto an unrelated program.
+        if (!Query(identity).Present)
+        {
+            diagnosis = "no longer running";
+            return false;
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById(identity.Pid);
+            process.PriorityClass = priority;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception
+                                      or InvalidOperationException
+                                      or NotSupportedException)
+        {
+            diagnosis = $"Windows refused the priority change: {ex.Message}";
+            return false;
+        }
+
+        // Re-read. SetPriorityClass can report success while the kernel declines or adjusts the
+        // request, and a throttle that quietly did nothing would still be journalled as applied - so
+        // restore would later write a priority the process never actually had.
+        var after = Query(identity);
+        if (!after.Present)
+        {
+            diagnosis = "exited while its priority was being changed";
+            return false;
+        }
+
+        if (after.PriorityClass != priority)
+        {
+            diagnosis = $"asked for {priority} but it reads {after.PriorityClass} afterwards";
+            return false;
+        }
+
+        diagnosis = string.Empty;
+        return true;
+    }
+
     private static int CurrentSessionId()
     {
         using var self = Process.GetCurrentProcess();

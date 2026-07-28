@@ -3,8 +3,15 @@ using Quiesce.Core.Platform;
 
 namespace Quiesce.Tests;
 
-public class ProcessClassifierTests
+public class ProcessClassifierTests : IDisposable
 {
+    // The classifier reads live ancestry, and the fake hands out PIDs from 1000 up — which can collide
+    // with a real PID in the test host's own chain and make an unrelated test fail intermittently.
+    // Pinned to empty so the machine running the tests cannot decide their outcome.
+    public ProcessClassifierTests() => ProcessAncestry.OverrideForTests = new HashSet<int>();
+
+    public void Dispose() => ProcessAncestry.OverrideForTests = null;
+
     private static readonly string[] GameDirs =
     [
         @"C:\Program Files (x86)\Overwatch",
@@ -137,6 +144,32 @@ public class ProcessClassifierTests
         };
 
         Assert.Equal(ProcessClass.NeverTouch, _classifier.Classify(p));
+    }
+
+    [Fact]
+    public void Every_process_sharing_an_image_with_the_host_application_is_protected()
+    {
+        // Measured, not theorised: the host application on the development machine ran 14 processes and
+        // only 2 were in the ancestor chain, because Chromium-style apps put renderers and helpers
+        // beside the spawning process rather than above it. A PID-only guard left 12 of 14 classified
+        // Ordinary — enough to break the application while appearing to have spared it.
+        const string hostImage = @"C:\Users\someone\AppData\Local\HostApp\host.exe";
+
+        var mainProcess = _processes.Add("host", hostImage);
+        ProcessAncestry.OverrideForTests = new HashSet<int> { mainProcess.Identity.Pid };
+
+        var sibling = _processes.Add("host", hostImage);        // a renderer: same image, not an ancestor
+        var unrelated = _processes.Add("host", @"C:\Elsewhere\host.exe"); // same NAME, different image
+
+        var classifier = new ProcessClassifier(
+            GameDirs, serviceHostPids: null, selfHostImagePaths: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { hostImage });
+
+        Assert.Equal(ProcessClass.SelfOrLauncherOfSelf, classifier.Classify(mainProcess));
+        Assert.Equal(ProcessClass.SelfOrLauncherOfSelf, classifier.Classify(sibling));
+
+        // Deliberately NOT protected: a program merely called the same thing somewhere else on disk is
+        // not the host, and treating it as one would be name-based matching by the back door.
+        Assert.Equal(ProcessClass.Ordinary, classifier.Classify(unrelated));
     }
 
     [Fact]

@@ -3,8 +3,14 @@ using Quiesce.Core.Platform;
 
 namespace Quiesce.Tests;
 
-public class ProcessCloserTests
+public class ProcessCloserTests : IDisposable
 {
+    // See ProcessClassifierTests: pinned so a real PID in the test host's ancestry cannot collide with
+    // a fake one and refuse a close the test expects to succeed.
+    public ProcessCloserTests() => ProcessAncestry.OverrideForTests = new HashSet<int>();
+
+    public void Dispose() => ProcessAncestry.OverrideForTests = null;
+
     private static readonly string[] GameDirs = [@"D:\SteamLibrary\steamapps\common\Elden Ring"];
 
     private readonly FakeProcessControl _processes = new();

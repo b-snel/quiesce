@@ -85,6 +85,34 @@ public sealed class FakeProcessControl : IProcessControl
         return ProcessCloseResult.Closed;
     }
 
+    /// <summary>PIDs whose priority write silently does not stick, modelling a kernel-adjusted request.</summary>
+    public HashSet<int> IgnorePriorityWrites { get; } = [];
+
+    public List<string> PriorityLog { get; } = [];
+
+    public bool TrySetPriority(ProcessIdentity identity, ProcessPriorityClass priority, out string diagnosis)
+    {
+        if (!_byPid.TryGetValue(identity.Pid, out var found)
+            || found.Identity.CreatedUtcTicks != identity.CreatedUtcTicks)
+        {
+            diagnosis = "no longer running";
+            return false;
+        }
+
+        PriorityLog.Add($"priority {found.ImageName} ({identity.Pid}) {found.PriorityClass} -> {priority}");
+
+        if (IgnorePriorityWrites.Contains(identity.Pid))
+        {
+            // The write "succeeds" and the value does not change, so the verify re-read catches it.
+            diagnosis = $"asked for {priority} but it reads {found.PriorityClass} afterwards";
+            return false;
+        }
+
+        _byPid[identity.Pid] = found with { PriorityClass = priority };
+        diagnosis = string.Empty;
+        return true;
+    }
+
     public IReadOnlyList<ProcessSnapshot> Enumerate() => _byPid.Values.ToList();
 
     public ProcessSnapshot Query(ProcessIdentity identity)
