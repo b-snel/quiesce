@@ -75,6 +75,30 @@ public class VetoedWriteTests : IDisposable
     }
 
     [Fact]
+    public void An_unremovable_created_key_is_reported_as_residue_not_a_failed_revert()
+    {
+        // Observed end state of the real incident: Quiesce created
+        // HKLM\SOFTWARE\Policies\Microsoft\Dsh on the way to a write that was then vetoed, and was
+        // afterwards refused permission to delete the empty key it had just created. Treating that
+        // as a revert failure wedged the session - "machine still DIRTY", forever, over a key
+        // holding nothing, with every retry hitting the same refusal.
+        //
+        // The value is what governs behaviour and it is restored. The leftover empty key is
+        // residue: reported, never silent, but not a reason to refuse to close the session.
+        var entry = EngineTestHarness.DwordEntry(id: "shell.created-key", valueName: "Vetoed");
+        var target = EngineTestHarness.TargetOf(entry);
+
+        var engage = _h.Engine.Engage(_h.Engine.Plan(EngineTestHarness.CatalogOf(entry), "test"), FaultInjector.None);
+        _h.Registry.RefuseCreatedKeyCleanup = true;
+
+        var revert = _h.Engine.RevertSession(engage.SessionId, "test");
+
+        Assert.True(revert.Clean, $"session must close; failures: {string.Join(" | ", revert.Messages)}");
+        Assert.Null(_h.Registry.Peek(target));
+        Assert.Contains(revert.Messages, m => m.Contains("could not remove the empty key", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void A_value_present_prior_that_already_matches_is_not_rewritten()
     {
         var entry = EngineTestHarness.DwordEntry(id: "shell.prior-present", valueName: "HadAValue", leanData: 0);

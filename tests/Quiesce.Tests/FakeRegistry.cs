@@ -121,8 +121,19 @@ public sealed class FakeRegistry : IRegistry
         Find(Root(target), FullPath(target))?.Values.Remove(target.ValueName);
     }
 
+    /// <summary>
+    /// Refuses deletion of keys this fake created, modelling a machine that let Quiesce create a
+    /// key on the way to a write and then would not let it remove the empty key afterwards.
+    /// </summary>
+    public bool RefuseCreatedKeyCleanup { get; set; }
+
     public void DeleteCreatedKeysIfEmpty(RegistryTarget target, string relativeCreatedPath)
     {
+        if (RefuseCreatedKeyCleanup)
+        {
+            throw new UnauthorizedAccessException("Attempted to perform an unauthorized operation.");
+        }
+
         var full = FullPath(target).Split('\\');
         var createdDepth = relativeCreatedPath.Split('\\').Length;
 

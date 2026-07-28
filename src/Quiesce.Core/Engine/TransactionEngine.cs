@@ -631,18 +631,20 @@ public sealed class TransactionEngine(
     }
 
     /// <summary>Undoes one applied step, dispatching on which kind of prior it captured.</summary>
-    private void UndoApplied(AppliedStep applied)
+    /// <returns>Null on a clean undo, or a description of residue left behind.</returns>
+    private string? UndoApplied(AppliedStep applied)
     {
         if (applied.RegistryTarget is { } target && applied.RegistryPrior is { } prior)
         {
-            RestorePrior(target, prior);
-            return;
+            return RestorePrior(target, prior);
         }
 
         if (applied.Service is { } service && applied.ServicePrior is { } servicePrior && services is not null)
         {
             RestoreService(service, servicePrior);
         }
+
+        return null;
     }
 
     /// <summary>
@@ -796,8 +798,17 @@ public sealed class TransactionEngine(
                 }
                 else
                 {
-                    RestorePrior(registryTarget, step.Prior);
+                    var residue = RestorePrior(registryTarget, step.Prior);
                     outcome = step.Prior.Presence == RegPresence.ValuePresent ? "restored" : "deleted";
+
+                    if (residue is not null)
+                    {
+                        // Counted as reverted, because it is: the value is back. Said out loud,
+                        // because silent residue is how a tool ends up having changed a machine it
+                        // reported clean.
+                        outcome = "restored-with-residue";
+                        messages.Add($"step {step.StepId} ({step.Target}): {residue}");
+                    }
 
                     // An activation with captured state gets that state replayed; one without is a
                     // pure notification and only needs re-broadcasting.
@@ -963,7 +974,11 @@ public sealed class TransactionEngine(
             .ToList();
     }
 
-    private void RestorePrior(RegistryTarget target, RegistryProbe prior)
+    /// <summary>
+    /// Puts one registry target back to its captured prior. Returns null on a clean restore, or a
+    /// description of harmless residue left behind (see the created-key case below).
+    /// </summary>
+    private string? RestorePrior(RegistryTarget target, RegistryProbe prior)
     {
         // Check the end state BEFORE mutating. A restore whose outcome already holds must not issue
         // the write or the delete anyway: the operation can be refused even when it would change
@@ -983,7 +998,7 @@ public sealed class TransactionEngine(
         var current = registry.Probe(target);
         if (IsAlreadyRestored(current, prior))
         {
-            return;
+            return null;
         }
 
         switch (prior.Presence)
@@ -1009,7 +1024,24 @@ public sealed class TransactionEngine(
 
                 if (prior.MissingKeyPath is { } created)
                 {
-                    registry.DeleteCreatedKeysIfEmpty(target, created);
+                    try
+                    {
+                        registry.DeleteCreatedKeysIfEmpty(target, created);
+                    }
+                    catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+                    {
+                        // The VALUE is what governs behaviour, and it is restored. An empty key we
+                        // created and are not permitted to remove is cosmetic residue - reportable,
+                        // but not grounds to declare the session permanently unrevertable.
+                        //
+                        // Observed: Quiesce created HKLM\SOFTWARE\Policies\Microsoft\Dsh on the way
+                        // to a write that was then vetoed, and was subsequently refused permission
+                        // to delete the empty key it had just created. Treating that as a failure
+                        // wedged the session - it reported "machine still DIRTY" forever over a
+                        // key holding nothing.
+                        return $"restored, but could not remove the empty key it created at " +
+                               $"{target.Hive}\\{target.Subkey} ({ex.Message})";
+                    }
                 }
 
                 break;
@@ -1017,6 +1049,8 @@ public sealed class TransactionEngine(
             default:
                 throw new ArgumentOutOfRangeException(nameof(prior), prior.Presence, "Unknown presence.");
         }
+
+        return null;
     }
 
     /// <summary>True when the live state already matches the captured prior, so restoring it is a no-op.</summary>
