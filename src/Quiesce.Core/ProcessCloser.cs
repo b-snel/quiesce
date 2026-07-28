@@ -22,11 +22,18 @@ public sealed class ProcessCloser
 {
     private readonly IProcessControl _processes;
     private readonly ProcessClassifier _classifier;
+    private readonly GameLiveGuard _gameLive;
 
-    public ProcessCloser(IProcessControl processes, ProcessClassifier classifier)
+    /// <param name="services">
+    /// The SCM, used only to ask whether a demand-started anti-cheat is running. Optional so a test can
+    /// construct a closer without one, and null is honest about what that costs: with no SCM that half of
+    /// <see cref="GameLiveGuard"/> cannot fire.
+    /// </param>
+    public ProcessCloser(IProcessControl processes, ProcessClassifier classifier, IServiceControl? services = null)
     {
         _processes = processes ?? throw new ArgumentNullException(nameof(processes));
         _classifier = classifier ?? throw new ArgumentNullException(nameof(classifier));
+        _gameLive = new GameLiveGuard(_processes, _classifier, services);
     }
 
     /// <summary>The default grace period. A save prompt will consume all of it.</summary>
@@ -128,60 +135,17 @@ public sealed class ProcessCloser
             return true;
         }
 
-        // Deferred from the M4 review and closed here, because this is the first code that mutates
-        // process state. A protected game can start at any moment - including during a long apply, if
-        // the user alt-tabs while the UI says "applying" - and interfering with anything near a
-        // running kernel anti-cheat is a hardware-ban vector, not merely a stability risk. An EAC ban
-        // propagates to every EAC title tied to the hardware, so this is the one refusal where the
-        // downside of being wrong is unrecoverable.
-        if (AnyGameRunning(out var game))
+        // The refusal where being wrong is unrecoverable, and the one place both this and the throttler
+        // must agree word for word. It used to be an identical private AnyGameRunning and an identical
+        // sentence in each of the two files; see GameLiveGuard for why one copy, and for why it now asks
+        // two independent questions rather than one that cannot fire.
+        if (_gameLive.IsLive(out var gameReason))
         {
-            reason =
-                $"{game} is running. Quiesce will not close or throttle anything while a game is live: " +
-                "kernel anti-cheats treat activity around a protected process as suspicious, and a ban " +
-                "cannot be undone. Close the game first.";
+            reason = gameReason;
             return true;
         }
 
         reason = string.Empty;
-        return false;
-    }
-
-    /// <summary>
-    /// True when a game is actually running.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Deliberately keyed on <see cref="ProcessClass.Game"/> ALONE, not on
-    /// <see cref="ProcessClass.LauncherOrAntiCheat"/>. Blocking on launchers looks more cautious and
-    /// would make the entire feature inert: Steam, the Epic helper and Riot Vanguard run essentially
-    /// permanently on a gaming machine — Vanguard starts at boot by design — so any of them present
-    /// would refuse every close forever, on every machine this tool is aimed at. Those components are
-    /// never touched themselves; their mere presence is not a hazard.
-    /// </para>
-    /// <para>
-    /// Known limitation, worth stating rather than hiding: a game that is not under any discovered
-    /// game directory classifies as Ordinary and will not trip this check. The guard is only as good
-    /// as the allowlist feeding the classifier.
-    /// </para>
-    /// <para>
-    /// Re-enumerated on every call rather than cached. Caching would defeat the point — the scenario
-    /// is a game launching <em>during</em> a long apply — and the cost is a few hundred milliseconds
-    /// across an entire engage, against a per-process close timeout measured in seconds.
-    /// </para>
-    /// </remarks>
-    private bool AnyGameRunning(out string gameName)
-    {
-        foreach (var process in _processes.Enumerate())
-        {
-            if (_classifier.Classify(process) == ProcessClass.Game)
-            {
-                gameName = process.ImageName;
-                return true;
-            }
-        }
-
-        gameName = string.Empty;
         return false;
     }
 }

@@ -47,10 +47,17 @@ public sealed class ProcessThrottler
     private readonly IProcessControl _processes;
     private readonly ProcessClassifier _classifier;
 
-    public ProcessThrottler(IProcessControl processes, ProcessClassifier classifier)
+    private readonly GameLiveGuard _gameLive;
+
+    /// <param name="services">
+    /// The SCM, for the anti-cheat half of <see cref="GameLiveGuard"/>. Optional, and null means that
+    /// half cannot fire.
+    /// </param>
+    public ProcessThrottler(IProcessControl processes, ProcessClassifier classifier, IServiceControl? services = null)
     {
         _processes = processes ?? throw new ArgumentNullException(nameof(processes));
         _classifier = classifier ?? throw new ArgumentNullException(nameof(classifier));
+        _gameLive = new GameLiveGuard(_processes, _classifier, services);
     }
 
     /// <summary>
@@ -263,12 +270,11 @@ public sealed class ProcessThrottler
             return true;
         }
 
-        if (AnyGameRunning(out var game))
+        // One implementation shared with ProcessCloser. These two files each carried their own identical
+        // copy of this rule and its sentence - the rule with the highest cost of being wrong, duplicated.
+        if (_gameLive.IsLive(out var gameReason))
         {
-            reason =
-                $"{game} is running. Quiesce will not close or throttle anything while a game is live: " +
-                "kernel anti-cheats treat activity around a protected process as suspicious, and a ban " +
-                "cannot be undone. Close the game first.";
+            reason = gameReason;
             return true;
         }
 
@@ -334,21 +340,6 @@ public sealed class ProcessThrottler
         Catalog.ThrottleLevel.Idle => ProcessPriorityClass.Idle,
         _ => throw new ArgumentOutOfRangeException(nameof(level), level, "Unknown throttle level."),
     };
-
-    private bool AnyGameRunning(out string gameName)
-    {
-        foreach (var process in _processes.Enumerate())
-        {
-            if (_classifier.Classify(process) == ProcessClass.Game)
-            {
-                gameName = process.ImageName;
-                return true;
-            }
-        }
-
-        gameName = string.Empty;
-        return false;
-    }
 
     private static ProcessThrottleOutcome Fail(ProcessIdentity identity, ProcessSnapshot live, string detail) => new()
     {

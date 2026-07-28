@@ -65,12 +65,17 @@ public sealed class TransactionEngine(
     /// <see cref="ProcessClassifier.ForMachine"/> factory exists to prevent. A half-wired engine refuses
     /// process ops with a reason instead.
     /// </remarks>
+    /// <remarks>
+    /// <paramref name="services"/> is passed through for the anti-cheat half of the game-live guard. It is
+    /// already optional and already null in the tests that only exercise the process layer, so the guard
+    /// degrades the way it documents rather than requiring every caller to change.
+    /// </remarks>
     private readonly ProcessCloser? _closer = processes is not null && processClassifier is not null
-        ? new ProcessCloser(processes, processClassifier)
+        ? new ProcessCloser(processes, processClassifier, services)
         : null;
 
     private readonly ProcessThrottler? _throttler = processes is not null && processClassifier is not null
-        ? new ProcessThrottler(processes, processClassifier)
+        ? new ProcessThrottler(processes, processClassifier, services)
         : null;
 
     private const string ProcessLayerUnavailable =

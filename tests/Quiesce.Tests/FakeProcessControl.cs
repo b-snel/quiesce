@@ -21,7 +21,7 @@ public sealed class FakeProcessControl : IProcessControl
         bool hasWindow = true,
         int sessionId = 1)
     {
-        var assignedPid = pid == 0 ? _byPid.Count + 1000 : pid;
+        var assignedPid = pid == 0 ? NextFreePid() : pid;
         var snapshot = new ProcessSnapshot
         {
             Identity = new ProcessIdentity { Pid = assignedPid, CreatedUtcTicks = _nextTick++ },
@@ -35,6 +35,42 @@ public sealed class FakeProcessControl : IProcessControl
         _byPid[assignedPid] = snapshot;
         return snapshot;
     }
+
+    /// <summary>
+    /// The next unused PID at or above 1000, for the callers that do not care which they get.
+    /// </summary>
+    /// <remarks>
+    /// It used to be <c>_byPid.Count + 1000</c>, which is not the same thing and produced a genuine
+    /// PID-dependent flake. A test that adds one process at an EXPLICIT pid and then two auto-assigned
+    /// ones gets 1001 and 1002 — so when the explicit pid happened to be 1001 itself, the second Add
+    /// silently OVERWROTE the first, the count did not grow, and the third overwrote the second. Three
+    /// added processes, one surviving entry.
+    /// <para>
+    /// Observed exactly once in a full run and not reproducible afterwards, because whether it happens
+    /// depends on the test host's own <c>Environment.ProcessId</c>:
+    /// <c>ProcessesInAnotherSessionAreNotOffered</c> adds "self" at <c>Environment.ProcessId</c>, so on a
+    /// run where the runner happened to be PID 1001 the map collapsed to a single session-2 process, the
+    /// discovery list came back empty, and the assertion failed. Every other PID passes. That is the
+    /// worst possible failure mode for a test suite: correct almost always, wrong for a reason that looks
+    /// like nothing to do with the test.
+    /// </para>
+    /// <para>
+    /// Monotonic and skipping occupied slots, so it cannot collide with an explicit pid whatever the
+    /// runner's own is. Explicit pids may still overwrite each other, deliberately — that is what
+    /// <see cref="Recycle"/> is.
+    /// </para>
+    /// </remarks>
+    private int NextFreePid()
+    {
+        while (_byPid.ContainsKey(_nextAutoPid))
+        {
+            _nextAutoPid++;
+        }
+
+        return _nextAutoPid++;
+    }
+
+    private int _nextAutoPid = 1000;
 
     /// <summary>Removes a process, as if it exited.</summary>
     public void Exit(ProcessIdentity identity) => _byPid.Remove(identity.Pid);

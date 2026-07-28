@@ -413,6 +413,75 @@ public static class Guardrails
         };
 
     /// <summary>
+    /// Anti-cheat services whose RUNNING state means a protected game is live right now.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A different question from <see cref="NeverTouchServices"/>, which asks "may Quiesce stop this".
+    /// This asks "does the fact that this is running tell me a protected game is on screen" — and it
+    /// exists because the answer was previously nowhere: <c>ProcessCloser.AnyGameRunning</c> is keyed on
+    /// <c>ProcessClass.Game</c>, which is derived from the game-directory allowlist, and every production
+    /// call site builds the classifier with <c>gameDirectories: null</c>. So the one refusal whose
+    /// downside is unrecoverable could not fire at all.
+    /// </para>
+    /// <para>
+    /// RIOT VANGUARD IS DELIBERATELY ABSENT, and this is the whole subtlety of the list. <c>vgc</c> and
+    /// <c>vgk</c> start at BOOT by design and run permanently on any machine with Valorant installed, so
+    /// "Vanguard is running" carries no information about whether a game is live. Including it would
+    /// refuse every close forever on exactly the machines this tool is aimed at —
+    /// <c>AnyGameRunning</c>'s own remark already warns against precisely that mistake for launcher
+    /// processes, and it applies identically here. Vanguard is still never touched; it is just not
+    /// evidence.
+    /// </para>
+    /// <para>
+    /// The members here are demand-started: measured on this machine, <c>EasyAntiCheat_EOS</c> is
+    /// <c>DEMAND_START</c>, which is what makes its running state meaningful — a game launcher started
+    /// it. That is also why <see cref="IsAntiCheatGameSignal"/> requires the service NOT to be
+    /// auto-start rather than trusting this list alone: if a future build ships one of these as
+    /// automatic, "running" silently stops implying "game live", and the rule should notice by itself
+    /// rather than depend on someone updating a comment.
+    /// </para>
+    /// </remarks>
+    public static readonly IReadOnlySet<string> AntiCheatGameSignalServices =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "EasyAntiCheat", "EasyAntiCheat_EOS", "BEService",
+        };
+
+    /// <summary>
+    /// Whether this snapshot is evidence that a protected game is running right now.
+    /// </summary>
+    /// <remarks>
+    /// Four conditions, all required. Present, because a service that is not installed proves nothing.
+    /// Running, because all of these are installed-and-stopped for most of a machine's life. Named,
+    /// because only these three are demand-started in practice. And <see cref="ServiceStartType.Manual"/>
+    /// SPECIFICALLY — not merely "!= Automatic", which was the first draft and was wrong: <c>Boot</c> and
+    /// <c>System</c> are also Windows starting it, and a kernel-mode anti-cheat driver is exactly a
+    /// <c>System</c>-start service. Requiring Manual positively means the running state can only have
+    /// been caused by something asking for it, which is the fact being inferred.
+    /// <para>
+    /// That also makes the Vanguard exclusion belt-and-braces rather than list-only: <c>vgk</c> is a
+    /// boot-start driver, so even if someone added it above, it could not produce a false signal here.
+    /// </para>
+    /// <para>
+    /// The trade-off is stated rather than hidden: if an anti-cheat is auto-start AND a game is live,
+    /// this returns false and the close proceeds. That is a false negative chosen over the alternative,
+    /// which is a tool that refuses every close forever on a machine where the anti-cheat happens to be
+    /// configured differently. The allowlist-driven <c>AnyGameRunning</c> check remains the real answer
+    /// once game discovery lands.
+    /// </para>
+    /// </remarks>
+    public static bool IsAntiCheatGameSignal(ServiceSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        return snapshot.Present
+            && AntiCheatGameSignalServices.Contains(snapshot.Service)
+            && snapshot.RunState == ServiceRunState.Running
+            && snapshot.StartType == ServiceStartType.Manual;
+    }
+
+    /// <summary>
     /// Processes Quiesce will never close, kill, or throttle.
     /// </summary>
     public static readonly IReadOnlySet<string> NeverTouchProcesses =
