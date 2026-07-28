@@ -217,6 +217,81 @@ public sealed class UserCatalogStore(string dataRoot)
                 && op.UnderDirectories.Any(d =>
                     d.Equals(candidate.DirectoryFragment, StringComparison.OrdinalIgnoreCase))));
 
+    /// <summary>
+    /// Adds — or refreshes — the entry that stops one discovered item running at sign-in.
+    /// </summary>
+    /// <remarks>
+    /// Keyed on the exact (hive, subkey, value) the op writes, which is a stronger identity than the
+    /// running-app case has: an approval value names one entry at one location and nothing else can
+    /// collide with it. Refreshes rather than duplicating for the reason the app flow learned the hard way,
+    /// and refreshing is not cosmetic here — the lean bytes are derived from the blob observed at
+    /// authoring time, so re-adding after the entry was toggled by hand rewrites them to match.
+    /// </remarks>
+    public UserEntryResult AddStartupDisable(Startup.StartupItem item, CatalogFile? shipped)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+
+        var existing = Load();
+        var fresh = Startup.StartupItemDiscovery.EntryFor(item);
+        var op = (RegistryOpSpec)fresh.Ops[0];
+
+        if (FindByRegistryTarget(existing, op) is { } match)
+        {
+            var current = (RegistryOpSpec)match.Ops[0];
+
+            if (current.LeanData.GetString() == op.LeanData.GetString())
+            {
+                return new UserEntryResult
+                {
+                    EntryId = match.Id,
+                    Outcome = UserEntryOutcome.AlreadyPresent,
+                    AddedImageNames = [],
+                };
+            }
+
+            Save(existing! with
+            {
+                Entries = [.. existing.Entries.Select(e => e.Id == match.Id ? match with { Ops = fresh.Ops } : e)],
+            });
+
+            return new UserEntryResult
+            {
+                EntryId = match.Id,
+                Outcome = UserEntryOutcome.Extended,
+                AddedImageNames = [item.Name],
+            };
+        }
+
+        var taken = (shipped?.Entries.Select(e => e.Id) ?? [])
+            .Concat(existing?.Entries.Select(e => e.Id) ?? [])
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var entry = Startup.StartupItemDiscovery.EntryFor(item, taken);
+
+        Save(new CatalogFile
+        {
+            SchemaVersion = CatalogLoader.SupportedSchemaVersion,
+            CatalogVersion = "user",
+            Entries = [.. existing?.Entries ?? [], entry],
+        });
+
+        return new UserEntryResult
+        {
+            EntryId = entry.Id,
+            Outcome = UserEntryOutcome.Added,
+            AddedImageNames = [item.Name],
+        };
+    }
+
+    /// <summary>The stored entry writing this exact registry target, if any.</summary>
+    private static CatalogEntry? FindByRegistryTarget(CatalogFile? existing, RegistryOpSpec op) =>
+        existing?.Entries.FirstOrDefault(entry =>
+            entry.Ops.Count == 1
+            && entry.Ops[0] is RegistryOpSpec stored
+            && stored.Hive == op.Hive
+            && stored.Subkey.Equals(op.Subkey, StringComparison.OrdinalIgnoreCase)
+            && stored.Value.Equals(op.Value, StringComparison.Ordinal));
+
     /// <summary>Removes user entries by id. Shipped entries are not touchable this way and never should be.</summary>
     /// <returns>How many were actually removed.</returns>
     public int Remove(params string[] entryIds)

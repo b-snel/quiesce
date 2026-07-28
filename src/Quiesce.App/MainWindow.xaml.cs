@@ -39,6 +39,12 @@ public partial class MainWindow
                 page.CatalogChanged += (_, _) => InvalidatePages(keep: "Running apps");
                 return page;
             },
+            ["Startup"] = s =>
+            {
+                var page = new StartupPage(s);
+                page.CatalogChanged += (_, _) => InvalidatePages(keep: "Startup");
+                return page;
+            },
             ["Services"] = _ => new ServicesPage(),
             ["What Quiesce won't do"] = _ => new WontDoPage(),
         };

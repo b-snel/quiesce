@@ -138,6 +138,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   guardrails refuse a user-written entry exactly as they refuse a shipped one. New `quiesce list-apps` verb
   prints the same list.
 
+- **M6** — **Startup: stop things running at sign-in, reversibly.** Closing an application that starts
+  itself again at every sign-in is fighting the symptom — Comet came back after a reboot from a Startup-folder
+  shortcut. The new Startup page lists every auto-start entry (per-user and all-users Run keys, the 32-bit
+  Run key, both Startup folders), says which are already off, and switches one off by writing Explorer's own
+  `StartupApproved` value — the same switch Task Manager's Startup tab uses. No new op kind: it is an
+  ordinary `Binary` registry op, so it is journalled, verified by re-read, and undone byte-for-byte, including
+  the case where there was no approval value to begin with (restored by deleting it, because absent is not
+  zero). New `quiesce list-startup` verb prints the same list.
+  <br>These are the first **`Persistent`-scope** entries the app authors, and that is the point: boot recovery
+  auto-reverts Session-scoped steps once the boot has passed, which is exactly the moment a "do not start at
+  sign-in" preference needs to still be in force. They stay in force across reboots until turned back on.
+  <br>The blob format was measured, not taken from folklore: 12 bytes, bit 0 of the first DWORD is the
+  disabled flag, and the trailing FILETIME is optional (Docker Desktop on the development machine carries a
+  zeroed one). Bit 0 rather than equality with 3, so folder entries carrying 6 or 7 read correctly. The lean
+  bytes are derived from the blob observed at authoring time, so an entry the user already switched off by
+  hand elides as already-lean instead of being rewritten for a cosmetic timestamp.
+  <br>Two honest limits, stated in the UI and in the generated entry's notes: **logon scheduled tasks cannot
+  be switched off this way** and are listed as unmanageable rather than omitted — which matters concretely,
+  because Comet's updater has both a Run value and a logon task, so handling the Run value alone leaves the
+  task firing. And whether Explorer honours an approval value Quiesce wrote rather than one Task Manager
+  wrote is **reasoned, not measured**; nothing in the format carries provenance, but confirming it needs a
+  sign-out.
+
 ### Hardening (from the M4 adversarial guardrail review)
 
 - **Remote-session detection rewritten.** `GetSystemMetrics(SM_REMOTESESSION)` reports only on the

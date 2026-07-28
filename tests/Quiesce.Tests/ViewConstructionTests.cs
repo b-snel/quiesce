@@ -101,11 +101,14 @@ public class ViewConstructionTests
             // Given a throwaway data root rather than the real one: the page reads the user-added apps
             // file, and a test has no business reading or writing C:\ProgramData\Quiesce.
             new RunningAppsPage(CleanState() with { DataRoot = temp.Path }),
+            // Reads the real machine's Run keys and Startup folders, which is read-only and needs no
+            // elevation; the throwaway data root keeps the preference file out of C:\ProgramData.
+            new StartupPage(CleanState() with { DataRoot = temp.Path }),
             new ServicesPage(),
             new WontDoPage(),
         });
 
-        Assert.Equal(5, built.Length);
+        Assert.Equal(6, built.Length);
         Assert.All(built, page => Assert.NotNull(page));
     }
 

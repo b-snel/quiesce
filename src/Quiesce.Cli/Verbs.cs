@@ -20,6 +20,47 @@ internal static class Verbs
     // ------------------------------------------------------------ read-only
 
     /// <summary>
+    /// Lists what runs at sign-in, what is already off, and what Quiesce can switch off.
+    /// </summary>
+    /// <remarks>
+    /// Needs no elevation to READ anything interesting: the per-user Run key, the per-user Startup folder
+    /// and both approval keys are all readable by the owning user. Machine-wide entries are listed too and
+    /// marked as needing elevation to change, rather than hidden — a list that silently omitted half the
+    /// machine's auto-start surface would be the same lie as a short process list.
+    /// </remarks>
+    public static int ListStartup()
+    {
+        var items = new Quiesce.Core.Startup.StartupItemDiscovery(new Win32StartupInventory()).Discover();
+
+        var on = items.Count(i => !i.AlreadyDisabled);
+        Console.WriteLine(
+            $"{items.Count} sign-in entr{(items.Count == 1 ? "y" : "ies")}: {on} on, {items.Count - on} already off.");
+
+        // Logon tasks are the honest asterisk. Quiesce switches these off by writing Explorer's approval
+        // value, and a scheduled task has no approval value - so an application with both surfaces stays
+        // half-handled and the list has to say which.
+        var tasks = items.Count(i => !i.CanDisable);
+        if (tasks > 0)
+        {
+            Console.WriteLine($"  ({tasks} are logon scheduled tasks, which Quiesce cannot switch off.)");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("  STATE  LOCATION              NAME");
+
+        foreach (var item in items)
+        {
+            var state = item.AlreadyDisabled ? "off  " : "ON   ";
+            Console.WriteLine($"  {state}  {item.Location,-20}  {item.Name}" +
+                              (item.NeedsAdmin ? "   [needs admin to change]" : string.Empty) +
+                              (item.CanDisable ? string.Empty : "   [not manageable]"));
+            Console.WriteLine($"         {item.Command}");
+        }
+
+        return CommandRouter.ExitCode.Ok;
+    }
+
+    /// <summary>
     /// Lists running applications Quiesce may act on, and says which the catalog already covers.
     /// </summary>
     /// <remarks>

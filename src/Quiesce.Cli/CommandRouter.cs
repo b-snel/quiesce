@@ -33,6 +33,7 @@ public static class CommandRouter
         new("recover",       "M1", "Finish an interrupted apply or revert. Run automatically at boot/logon."),
         new("verify-revert", "M1", "Apply, immediately revert, and assert the machine is byte-identical."),
         new("list-apps",     "M5", "List running applications Quiesce may act on, and which the catalog covers."),
+        new("list-startup",  "M6", "List what runs at sign-in, whether it is already off, and what Quiesce can switch off."),
         new("discover",      "M5", "Find installed games across Steam, Epic, Battle.net, EA, GOG, Xbox."),
         new("update",        "M7", "Check for a new release. --appcast <url> overrides the source (testing only)."),
     ];
@@ -75,6 +76,7 @@ public static class CommandRouter
                 "recover" => Quiesce.Cli.Verbs.Recover(env),
                 "verify-revert" => Quiesce.Cli.Verbs.VerifyRevert(env),
                 "list-apps" => Quiesce.Cli.Verbs.ListApps(env),
+                "list-startup" => Quiesce.Cli.Verbs.ListStartup(),
                 _ => NotImplemented(verb),
             };
         }
