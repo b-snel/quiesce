@@ -1,0 +1,245 @@
+<#
+.SYNOPSIS
+    M3 acceptance: engage, restore, and prove the machine is byte-identical. Repeat to catch drift.
+
+.DESCRIPTION
+    The round-trip check inside `quiesce verify-revert` only inspects targets the catalog names, so
+    it cannot see collateral damage. This script snapshots the WHOLE of every registry subtree the
+    catalog touches - every sibling value, every subkey - before and after, and diffs them.
+
+    Repeats the cycle N times because some drift only accumulates: a restore that leaves one extra
+    value behind looks clean once and obvious after five rounds.
+
+    Also captures the live mouse acceleration curve via SPI_GETMOUSE, because the mouse entry's
+    revert is a system-parameter replay that a registry diff cannot see.
+
+    READ-ONLY except for what Quiesce itself does. The script never writes the registry directly.
+
+.PARAMETER Rounds
+    How many engage/restore cycles to run. The plan calls for 5.
+
+.PARAMETER Quiesce
+    Path to quiesce.exe. Defaults to the Release build output.
+#>
+[CmdletBinding()]
+param(
+    [int] $Rounds = 5,
+    [string] $Quiesce
+)
+
+$ErrorActionPreference = 'Stop'
+$repo = Split-Path -Parent $PSScriptRoot
+
+if (-not $Quiesce) {
+    $found = Get-ChildItem (Join-Path $repo 'src\Quiesce.Cli\bin\Release') -Recurse -Filter quiesce.exe -ErrorAction SilentlyContinue |
+             Where-Object { Test-Path ([System.IO.Path]::ChangeExtension($_.FullName, '.dll')) } |
+             Select-Object -First 1
+    if (-not $found) { throw "quiesce.exe not found. Build first: dotnet build -c Release" }
+    $Quiesce = $found.FullName
+}
+
+# ---------------------------------------------------------------- snapshotting
+
+function Get-CatalogSubtrees {
+    param([string] $CatalogPath)
+
+    $catalog = Get-Content $CatalogPath -Raw | ConvertFrom-Json
+    $subtrees = [System.Collections.Generic.HashSet[string]]::new()
+
+    foreach ($entry in $catalog.entries) {
+        foreach ($op in $entry.ops) {
+            $prefix = if ($op.hive -eq 'HKLM') { 'HKLM:' } else { 'HKCU:' }
+            [void]$subtrees.Add("$prefix\$($op.subkey)")
+        }
+    }
+
+    return $subtrees
+}
+
+function Get-Snapshot {
+    param([string[]] $Subtrees)
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($path in ($Subtrees | Sort-Object)) {
+        if (-not (Test-Path $path)) {
+            $lines.Add("$path :: <KEY ABSENT>")
+            continue
+        }
+
+        # Recurse: a restore that leaves litter in a child key is exactly the drift being hunted.
+        $keys = @($path) + @(Get-ChildItem $path -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.PSPath -replace '^Microsoft\.PowerShell\.Core\\Registry::', '' })
+
+        foreach ($key in ($keys | Sort-Object -Unique)) {
+            $normalized = $key -replace '^HKEY_CURRENT_USER', 'HKCU:' -replace '^HKEY_LOCAL_MACHINE', 'HKLM:'
+            try {
+                $item = Get-Item $normalized -ErrorAction Stop
+            } catch {
+                continue
+            }
+
+            foreach ($name in ($item.GetValueNames() | Sort-Object)) {
+                $kind = $item.GetValueKind($name)
+                $raw = $item.GetValue($name, $null, 'DoNotExpandEnvironmentNames')
+                $rendered = if ($raw -is [byte[]]) { [BitConverter]::ToString($raw) }
+                            elseif ($raw -is [string[]]) { $raw -join '|' }
+                            else { "$raw" }
+                $lines.Add("$normalized :: $name :: $kind :: $rendered")
+            }
+        }
+    }
+
+    return $lines
+}
+
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public static class Spi {
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern bool SystemParametersInfo(uint a, uint b, [Out] int[] p, uint f);
+}
+"@
+
+<#
+Runs a quiesce verb and returns its combined output.
+
+Windows PowerShell 5.1 wraps every native-command stderr line in an ErrorRecord, which under
+`$ErrorActionPreference = 'Stop'` turns quiesce's harmless dev-mode ACL warning into a terminating
+error. Dropping to 'Continue' for the duration of the call is the only reliable way to invoke a
+native exe here and still judge it by its exit code rather than by whether it printed anything.
+#>
+function Invoke-Quiesce {
+    param([Parameter(Mandatory)][string] $Verb)
+
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        return & $Quiesce $Verb 2>&1 | ForEach-Object { "$_" }
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
+function Get-MouseCurve {
+    $values = New-Object int[] 3
+    if (-not [Spi]::SystemParametersInfo(0x0003, 0, $values, 0)) { return 'SPI_GETMOUSE failed' }
+    return ($values -join ',')
+}
+
+# ---------------------------------------------------------------------- run
+
+$catalogPath = if ($env:QUIESCE_CATALOG) { $env:QUIESCE_CATALOG } else { Join-Path $repo 'catalog\tweaks.json' }
+if (-not (Test-Path $catalogPath)) { throw "Catalog not found at $catalogPath" }
+
+$catalog = Get-Content $catalogPath -Raw | ConvertFrom-Json
+$elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator)
+
+# Test every entry we are actually able to apply. Unelevated, the HKLM rows cannot be written at
+# all, so including them would make the whole run refuse rather than testing the rows it can.
+# What gets skipped is reported, never silently dropped - a diff that quietly covers less than it
+# claims is worse than one that covers less and says so.
+$testable = if ($elevated) { $catalog.entries } else { $catalog.entries | Where-Object { -not $_.requiresAdmin } }
+$skipped  = if ($elevated) { @() } else { $catalog.entries | Where-Object { $_.requiresAdmin } }
+
+# Drive the run through a scratch data root so the real machine state is untouched, and enable
+# exactly the entries under test.
+$scratchRoot = Join-Path $env:TEMP "quiesce-baseline-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+New-Item -ItemType Directory -Force $scratchRoot | Out-Null
+@{
+    schemaVersion = 1
+    active        = 'default'
+    profiles      = @{ default = @{ enabled = @($testable.id) } }
+} | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $scratchRoot 'profiles.json') -Encoding UTF8
+
+$env:QUIESCE_DATA_ROOT = $scratchRoot
+$env:QUIESCE_CATALOG = $catalogPath
+
+Write-Host "quiesce  : $Quiesce"
+Write-Host "catalog  : $catalogPath (v$($catalog.catalogVersion), $($catalog.entries.Count) entries)"
+Write-Host "elevated : $elevated"
+Write-Host "testing  : $($testable.Count) entr$(if ($testable.Count -eq 1) {'y'} else {'ies'})"
+Write-Host "data root: $scratchRoot"
+if ($skipped.Count -gt 0) {
+    Write-Host "SKIPPED (need elevation - re-run this script as Administrator to cover them):" -ForegroundColor Yellow
+    $skipped | ForEach-Object { Write-Host "  $($_.id)" -ForegroundColor Yellow }
+}
+Write-Host "rounds   : $Rounds"
+Write-Host ""
+
+# Watch only the subtrees the tested entries touch.
+$subtrees = [System.Collections.Generic.HashSet[string]]::new()
+foreach ($entry in $testable) {
+    foreach ($op in $entry.ops) {
+        $prefix = if ($op.hive -eq 'HKLM') { 'HKLM:' } else { 'HKCU:' }
+        [void]$subtrees.Add("$prefix\$($op.subkey)")
+    }
+}
+Write-Host "Watching $($subtrees.Count) registry subtree(s), recursively:"
+$subtrees | Sort-Object | ForEach-Object { Write-Host "  $_" }
+Write-Host ""
+
+$baseline = Get-Snapshot -Subtrees $subtrees
+$baselineMouse = Get-MouseCurve
+Write-Host "Baseline: $($baseline.Count) values, mouse curve [$baselineMouse]"
+Write-Host ""
+
+$failures = 0
+
+for ($round = 1; $round -le $Rounds; $round++) {
+    Write-Host "--- round $round/$Rounds ---"
+
+    $engageOut = Invoke-Quiesce 'engage'
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  ENGAGE FAILED (exit $LASTEXITCODE)" -ForegroundColor Red
+        $engageOut | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+        $failures++
+        break
+    }
+
+    $engaged = Get-Snapshot -Subtrees $subtrees
+    $changed = (Compare-Object $baseline $engaged).Count
+    Write-Host "  engaged: $changed value(s) differ from baseline, mouse curve [$(Get-MouseCurve)]"
+
+    if ($changed -eq 0) {
+        Write-Host "  WARNING: engage changed nothing - the catalog may already be applied" -ForegroundColor Yellow
+    }
+
+    $restoreOut = Invoke-Quiesce 'restore'
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  RESTORE FAILED (exit $LASTEXITCODE)" -ForegroundColor Red
+        $restoreOut | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+        $failures++
+        break
+    }
+
+    $restored = Get-Snapshot -Subtrees $subtrees
+    $drift = Compare-Object $baseline $restored
+    $mouseNow = Get-MouseCurve
+
+    if ($drift) {
+        Write-Host "  DRIFT: $($drift.Count) difference(s) after restore" -ForegroundColor Red
+        $drift | ForEach-Object { Write-Host "    $($_.SideIndicator) $($_.InputObject)" -ForegroundColor Red }
+        $failures++
+    } elseif ($mouseNow -ne $baselineMouse) {
+        # Registry-clean but behaviour-dirty: the exact failure the activation replay exists to stop.
+        Write-Host "  DRIFT: registry clean but mouse curve is [$mouseNow], was [$baselineMouse]" -ForegroundColor Red
+        $failures++
+    } else {
+        Write-Host "  clean: byte-identical, mouse curve [$mouseNow]" -ForegroundColor Green
+    }
+}
+
+Write-Host ""
+Remove-Item $scratchRoot -Recurse -Force -ErrorAction SilentlyContinue
+
+if ($failures -eq 0) {
+    Write-Host "PASS - $Rounds round(s), no drift across $($testable.Count) entr$(if ($testable.Count -eq 1) {'y'} else {'ies'})." -ForegroundColor Green
+    if ($skipped.Count -gt 0) {
+        Write-Host "      ($($skipped.Count) admin-only entr$(if ($skipped.Count -eq 1) {'y'} else {'ies'}) not covered - re-run elevated.)" -ForegroundColor Yellow
+    }
+    exit 0
+}
+
+Write-Host "FAIL - $failures round(s) showed drift." -ForegroundColor Red
+exit 1

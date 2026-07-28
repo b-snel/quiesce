@@ -49,16 +49,7 @@ public sealed record AppState
         try
         {
             var catalog = CatalogLoader.LoadFile(catalogPath);
-            var engine = new TransactionEngine(
-                new Win32Registry(),
-                new Win32ActivationBroadcaster(),
-                paths,
-                new EngineInfo
-                {
-                    AppVersion = AppVersion(),
-                    OsBuild = $"{Environment.OSVersion.Version.Major}.{Environment.OSVersion.Version.Minor}.{Environment.OSVersion.Version.Build}",
-                    UserSid = QuiescePaths.CurrentUserSid(),
-                });
+            var engine = CreateEngine();
 
             return new AppState
             {
@@ -66,7 +57,7 @@ public sealed record AppState
                 DataRoot = paths.DataRoot,
                 Catalog = catalog,
                 CatalogPath = catalogPath,
-                Plan = engine.Plan(catalog, "default"),
+                Plan = engine.Plan(catalog, "default", new ProfileStore(paths.DataRoot).ActiveEnabled()),
             };
         }
         catch (Exception ex) when (ex is CatalogException or IOException or UnauthorizedAccessException)
@@ -79,6 +70,27 @@ public sealed record AppState
                 LoadError = ex.Message,
             };
         }
+    }
+
+    /// <summary>
+    /// Builds the engine the GUI mutates through — the same <see cref="TransactionEngine"/> the CLI
+    /// uses, so both paths share one tested implementation of apply and revert.
+    /// </summary>
+    public static TransactionEngine CreateEngine()
+    {
+        var broadcaster = new Win32ActivationBroadcaster();
+
+        return new TransactionEngine(
+            new Win32Registry(),
+            broadcaster,
+            new QuiescePaths(),
+            new EngineInfo
+            {
+                AppVersion = AppVersion(),
+                OsBuild = $"{Environment.OSVersion.Version.Major}.{Environment.OSVersion.Version.Minor}.{Environment.OSVersion.Version.Build}",
+                UserSid = QuiescePaths.CurrentUserSid(),
+            },
+            broadcaster);
     }
 
     public static string AppVersion() =>

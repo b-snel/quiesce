@@ -1,0 +1,182 @@
+using System.Globalization;
+using System.Text;
+using Quiesce.Core.Platform;
+
+namespace Quiesce.Core.Journal;
+
+/// <summary>
+/// Emits a plain <c>revert.cmd</c> of literal <c>reg.exe</c> commands beside the journal.
+/// </summary>
+/// <remarks>
+/// This is recovery net 4, and the only one that needs no Quiesce binary at all. It matters
+/// because the app is Authenticode-unsigned and a program that rewrites the registry and (later)
+/// reconfigures services is a behavioural match for defense-evasion tooling — Defender can
+/// quarantine the panic button precisely when it is needed. A .cmd of reg.exe calls survives that.
+/// <para>
+/// It is a genuine net, not documentation: the file is written before the first mutation and
+/// appended as each step is journaled, so a machine that loses power mid-apply still has an
+/// executable undo on disk covering everything that was actually done.
+/// </para>
+/// <para>
+/// Deliberately NOT a <c>.reg</c> file as the primary mechanism: <c>reg import</c> merges, so it
+/// can restore a changed value but can never remove one that did not exist before — which is the
+/// single most common prior state Quiesce captures.
+/// </para>
+/// </remarks>
+public sealed class RevertScriptWriter : IDisposable
+{
+    private readonly StreamWriter _writer;
+
+    private RevertScriptWriter(StreamWriter writer) => _writer = writer;
+
+    public static RevertScriptWriter Create(string sessionDir, Guid sessionId)
+    {
+        Directory.CreateDirectory(sessionDir);
+
+        var stream = new FileStream(
+            Path.Combine(sessionDir, "revert.cmd"),
+            FileMode.Create, FileAccess.Write, FileShare.Read);
+
+        // ASCII, CRLF: cmd.exe is unforgiving about both. A UTF-8 BOM makes the first line fail.
+        var writer = new StreamWriter(stream, Encoding.ASCII) { AutoFlush = true, NewLine = "\r\n" };
+
+        writer.WriteLine("@echo off");
+        writer.WriteLine("REM ============================================================");
+        writer.WriteLine("REM  Quiesce emergency revert");
+        writer.WriteLine($"REM  session {sessionId:D}");
+        writer.WriteLine("REM");
+        writer.WriteLine("REM  Undoes this Quiesce session using only reg.exe. Run as");
+        writer.WriteLine("REM  Administrator. Needs no Quiesce install and no catalog - use it if");
+        writer.WriteLine("REM  the app is broken, uninstalled, or quarantined by antivirus.");
+        writer.WriteLine("REM");
+        writer.WriteLine("REM  Written before each change is made, so it is safe to run after a");
+        writer.WriteLine("REM  crash or power loss mid-apply.");
+        writer.WriteLine("REM ============================================================");
+        writer.WriteLine();
+        writer.WriteLine("setlocal");
+        writer.WriteLine("set QUIESCE_FAILED=0");
+        writer.WriteLine();
+
+        return new RevertScriptWriter(writer);
+    }
+
+    /// <summary>
+    /// Appends the inverse of one applied step. Called immediately after the step is journaled,
+    /// so the script is never behind the machine.
+    /// </summary>
+    public void AppendInverse(int stepId, RegistryTarget target, RegistryProbe prior)
+    {
+        var key = FormatKeyPath(target);
+
+        _writer.WriteLine($"REM --- step {stepId}: {Describe(prior)}");
+
+        switch (prior.Presence)
+        {
+            case RegPresence.ValuePresent when prior.Value is { } value:
+                _writer.WriteLine(
+                    $"reg add \"{key}\" /v \"{target.ValueName}\" /t {RegExeType(value.ValueKind)} " +
+                    $"/d {QuoteData(value)} /f");
+                break;
+
+            case RegPresence.ValueAbsent:
+            case RegPresence.KeyAbsent:
+                // Delete, not "write 0". This is the whole point of the tri-state prior, and the
+                // reason reg import alone could never serve as the recovery net.
+                _writer.WriteLine($"reg delete \"{key}\" /v \"{target.ValueName}\" /f >nul 2>&1");
+
+                if (prior.Presence == RegPresence.KeyAbsent && prior.MissingKeyPath is { } created)
+                {
+                    // Only the keys Quiesce created, deepest first. reg delete on a key removes its
+                    // whole subtree, so this runs only for keys that did not exist beforehand.
+                    var segments = key.Split('\\');
+                    var createdDepth = created.Split('\\').Length;
+
+                    for (var depth = segments.Length; depth > segments.Length - createdDepth; depth--)
+                    {
+                        _writer.WriteLine($"reg delete \"{string.Join('\\', segments.Take(depth))}\" /f >nul 2>&1");
+                    }
+                }
+
+                break;
+
+            default:
+                _writer.WriteLine($"REM  (unknown prior presence '{prior.Presence}' - skipped)");
+                break;
+        }
+
+        _writer.WriteLine("if errorlevel 1 set QUIESCE_FAILED=1");
+        _writer.WriteLine();
+    }
+
+    /// <summary>Appends a human note (e.g. an activation the script cannot replay).</summary>
+    public void AppendNote(string note) => _writer.WriteLine($"REM  NOTE: {note}");
+
+    public void Finish()
+    {
+        _writer.WriteLine("if \"%QUIESCE_FAILED%\"==\"1\" (");
+        _writer.WriteLine("  echo.");
+        _writer.WriteLine("  echo One or more steps failed. Re-run from an elevated prompt.");
+        _writer.WriteLine("  exit /b 1");
+        _writer.WriteLine(")");
+        _writer.WriteLine("echo Quiesce session reverted.");
+        _writer.WriteLine("exit /b 0");
+    }
+
+    public void Dispose() => _writer.Dispose();
+
+    /// <summary>
+    /// Renders a target as a path reg.exe understands. Per-user targets become
+    /// <c>HKU\&lt;sid&gt;\...</c> rather than <c>HKCU</c>, so the script restores the right user's
+    /// hive even when run from another account or an elevated shell.
+    /// </summary>
+    private static string FormatKeyPath(RegistryTarget target) => target.Hive switch
+    {
+        "HKU" => $@"HKU\{target.UserSid}\{target.Subkey}",
+        "HKLM" => $@"HKLM\{target.Subkey}",
+        _ => throw new ArgumentException($"Unsupported hive '{target.Hive}'."),
+    };
+
+    private static string RegExeType(Microsoft.Win32.RegistryValueKind kind) => kind switch
+    {
+        Microsoft.Win32.RegistryValueKind.DWord => "REG_DWORD",
+        Microsoft.Win32.RegistryValueKind.QWord => "REG_QWORD",
+        Microsoft.Win32.RegistryValueKind.String => "REG_SZ",
+        Microsoft.Win32.RegistryValueKind.ExpandString => "REG_EXPAND_SZ",
+        Microsoft.Win32.RegistryValueKind.MultiString => "REG_MULTI_SZ",
+        Microsoft.Win32.RegistryValueKind.Binary => "REG_BINARY",
+        _ => throw new ArgumentException($"Unsupported registry kind '{kind}'."),
+    };
+
+    private static string QuoteData(RegistryData value)
+    {
+        var clr = value.ToClrValue();
+
+        return value.ValueKind switch
+        {
+            Microsoft.Win32.RegistryValueKind.DWord =>
+                "0x" + ((uint)(int)clr).ToString("x", CultureInfo.InvariantCulture),
+            Microsoft.Win32.RegistryValueKind.QWord =>
+                "0x" + ((ulong)(long)clr).ToString("x", CultureInfo.InvariantCulture),
+            Microsoft.Win32.RegistryValueKind.Binary =>
+                Convert.ToHexString((byte[])clr),
+            // reg.exe joins REG_MULTI_SZ elements with \0.
+            Microsoft.Win32.RegistryValueKind.MultiString =>
+                Quote(string.Join("\\0", (string[])clr)),
+            _ => Quote((string)clr),
+        };
+    }
+
+    /// <summary>
+    /// Quotes for cmd.exe. Registry data is machine-supplied rather than user-typed, but this
+    /// script runs elevated, so unbalanced quotes are treated as a correctness bug either way.
+    /// </summary>
+    private static string Quote(string raw) => $"\"{raw.Replace("\"", "\\\"")}\"";
+
+    private static string Describe(RegistryProbe prior) => prior.Presence switch
+    {
+        RegPresence.ValuePresent => $"restore {prior.Value!.Kind}",
+        RegPresence.ValueAbsent => "value did not exist - delete it",
+        RegPresence.KeyAbsent => "key did not exist - delete value and the keys we created",
+        _ => "unknown",
+    };
+}

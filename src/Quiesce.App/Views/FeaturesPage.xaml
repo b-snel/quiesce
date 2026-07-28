@@ -46,9 +46,12 @@
 
                                 <ui:ToggleSwitch Grid.Column="1"
                                                  VerticalAlignment="Center"
-                                                 IsChecked="{Binding IsApplied, Mode=OneWay}"
-                                                 IsEnabled="False"
-                                                 ToolTip="Toggles activate in M3." />
+                                                 Tag="{Binding EntryId}"
+                                                 IsChecked="{Binding IsEnabled, Mode=OneWay}"
+                                                 IsEnabled="{Binding CanToggle}"
+                                                 Checked="OnToggled"
+                                                 Unchecked="OnToggled"
+                                                 ToolTip="{Binding ToggleTip}" />
                             </Grid>
                         </ui:Card>
                     </DataTemplate>

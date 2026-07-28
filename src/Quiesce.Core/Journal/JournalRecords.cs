@@ -115,6 +115,14 @@ public sealed record ApplyingRecord : JournalRecord
     /// <summary>Broadcasts revert must re-issue. In the journal, not the catalog, on purpose.</summary>
     [JsonPropertyName("activation")]
     public IReadOnlyList<ActivationKind> Activation { get; init; } = [];
+
+    /// <summary>
+    /// Live system state captured before the activation fired, for activations that overwrite
+    /// state of their own (currently SPI_SETMOUSE). Restoring registry bytes without replaying
+    /// this leaves the running session on the tweaked behaviour until sign-out.
+    /// </summary>
+    [JsonPropertyName("activationPrior")]
+    public IReadOnlyList<ActivationState> ActivationPrior { get; init; } = [];
 }
 
 public sealed record AppliedRecord : JournalRecord

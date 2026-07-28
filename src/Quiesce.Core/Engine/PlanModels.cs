@@ -52,6 +52,13 @@ public sealed record EngageResult
 
     public required IReadOnlyList<string> RolledBackEntries { get; init; }
 
+    /// <summary>
+    /// Why each rolled-back entry failed, keyed by entry id. Surfaced verbatim so that a refusal by
+    /// Windows reads as "Windows blocked this, and here is why" rather than "the app is broken".
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Diagnoses { get; init; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
     public bool Success => RolledBackEntries.Count == 0;
 }
 

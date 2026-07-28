@@ -17,10 +17,29 @@ public class CliContractTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "quiesce-cli-tests", Guid.NewGuid().ToString("N"));
 
+    /// <summary>
+    /// Registry subkey unique to this test instance. The 7 tests in this class previously shared
+    /// one key, which made them order-dependent and intermittently flaky.
+    /// </summary>
+    private readonly string _keySuffix = Guid.NewGuid().ToString("N")[..8];
+
+    private string TestKeyPath => $@"SOFTWARE\Quiesce\CliTest\{_keySuffix}";
+
     public CliContractTests()
     {
         Directory.CreateDirectory(DataRoot);
         Directory.CreateDirectory(CatalogDir);
+
+        // Entries are opt-in: a catalog row does nothing until a profile enables it, so that
+        // shipping a new catalog can never silently start applying tweaks. The test opts in
+        // exactly the way a user would.
+        File.WriteAllText(Path.Combine(DataRoot, "profiles.json"), """
+        {
+          "schemaVersion": 1,
+          "active": "default",
+          "profiles": { "default": { "enabled": ["test.cli-roundtrip"] } }
+        }
+        """);
 
         // HKCU target under a Quiesce-only test key: writable unelevated, and never a real setting.
         File.WriteAllText(Path.Combine(CatalogDir, "tweaks.json"), """
@@ -43,7 +62,7 @@ public class CliContractTests : IDisposable
                   "kind": "registry",
                   "hive": "HKCU",
                   "view": "Registry64",
-                  "subkey": "SOFTWARE\\Quiesce\\CliTest",
+                  "subkey": "SOFTWARE\\Quiesce\\CliTest\\__SUFFIX__",
                   "value": "Probe",
                   "expectedKind": "DWord",
                   "leanData": 0
@@ -53,7 +72,7 @@ public class CliContractTests : IDisposable
             }
           ]
         }
-        """);
+        """.Replace("__SUFFIX__", _keySuffix));
     }
 
     private string DataRoot => Path.Combine(_root, "data");
@@ -75,7 +94,7 @@ public class CliContractTests : IDisposable
         {
             using var hkcu = Microsoft.Win32.RegistryKey.OpenBaseKey(
                 Microsoft.Win32.RegistryHive.CurrentUser, Microsoft.Win32.RegistryView.Registry64);
-            hkcu.DeleteSubKeyTree(@"SOFTWARE\Quiesce\CliTest", throwOnMissingSubKey: false);
+            hkcu.DeleteSubKeyTree(TestKeyPath, throwOnMissingSubKey: false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -191,11 +210,11 @@ public class CliContractTests : IDisposable
 
     // ---------------------------------------------------------------- helpers
 
-    private static int? ReadProbe()
+    private int? ReadProbe()
     {
         using var hkcu = Microsoft.Win32.RegistryKey.OpenBaseKey(
             Microsoft.Win32.RegistryHive.CurrentUser, Microsoft.Win32.RegistryView.Registry64);
-        using var key = hkcu.OpenSubKey(@"SOFTWARE\Quiesce\CliTest");
+        using var key = hkcu.OpenSubKey(TestKeyPath);
         return key?.GetValue("Probe") as int?;
     }
 

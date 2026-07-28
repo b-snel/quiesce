@@ -126,6 +126,17 @@ public static class CatalogLoader
                     // catalog load is the difference between a real tool and a placebo.
                     Fail($"leanData does not match expectedKind {op.ExpectedKind}.");
                 }
+
+                // "requiresAdmin iff HKLM" is the obvious rule and it is wrong: the per-user policy
+                // subtree is owned by Administrators and grants the interactive user read-only, so
+                // an unelevated write there is denied. Declaring requiresAdmin honestly is what
+                // lets the UI warn instead of failing at apply time.
+                if (op.Hive == CatalogHive.HKCU
+                    && op.Subkey.Contains(@"\Policies\", StringComparison.OrdinalIgnoreCase)
+                    && !entry.RequiresAdmin)
+                {
+                    Fail($"op targets the admin-owned per-user policy subtree '{op.Subkey}' but requiresAdmin is false.");
+                }
             }
         }
     }

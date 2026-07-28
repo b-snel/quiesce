@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Quiesce.Core.Catalog;
 using Quiesce.Core.Engine;
 using Quiesce.Core.Journal;
 using Quiesce.Core.Platform;
@@ -32,7 +33,7 @@ internal static class Verbs
         }
 
         var catalog = env.LoadCatalog();
-        var plan = env.CreateEngine().Plan(catalog, "default");
+        var plan = env.CreateEngine().Plan(catalog, "default", new ProfileStore(env.Paths.DataRoot).ActiveEnabled());
 
         Console.WriteLine($"catalog: {env.CatalogPath} (v{catalog.CatalogVersion}, {catalog.Entries.Count} entries)");
         Console.WriteLine();
@@ -55,7 +56,7 @@ internal static class Verbs
     public static int PrintPlan(CliEnvironment env)
     {
         var catalog = env.LoadCatalog();
-        var plan = env.CreateEngine().Plan(catalog, "default");
+        var plan = env.CreateEngine().Plan(catalog, "default", new ProfileStore(env.Paths.DataRoot).ActiveEnabled());
 
         Console.WriteLine($"plan for profile 'default' — {plan.EffectiveSteps.Count()} mutation(s), " +
                           $"{plan.Steps.Count(s => s.NoOp)} already-lean elision(s). Nothing has been changed.");
@@ -106,7 +107,7 @@ internal static class Verbs
 
         var catalog = env.LoadCatalog();
         var engine = env.CreateEngine();
-        var plan = engine.Plan(catalog, "default");
+        var plan = engine.Plan(catalog, "default", new ProfileStore(env.Paths.DataRoot).ActiveEnabled());
 
         if (plan.RequiresElevation && !CliEnvironment.IsElevated())
         {
@@ -130,7 +131,9 @@ internal static class Verbs
             Console.WriteLine($"  applied {result.Applied}, skipped {result.SkippedNoop} already-lean");
             foreach (var entry in result.RolledBackEntries)
             {
-                Console.WriteLine($"  ROLLED BACK: {entry} (verification failed; entry restored)");
+                var why = result.Diagnoses.TryGetValue(entry, out var d) ? d : "verification failed";
+                Console.WriteLine($"  ROLLED BACK: {entry}");
+                Console.WriteLine($"               {why}");
             }
 
             return result.Success ? CommandRouter.ExitCode.Ok : 1;
@@ -197,7 +200,7 @@ internal static class Verbs
         var engine = env.CreateEngine();
         var registry = new Win32Registry();
 
-        var plan = engine.Plan(catalog, "default");
+        var plan = engine.Plan(catalog, "default", new ProfileStore(env.Paths.DataRoot).ActiveEnabled());
         var mutations = plan.EffectiveSteps.ToList();
 
         if (mutations.Count == 0)

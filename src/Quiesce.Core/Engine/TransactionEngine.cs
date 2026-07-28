@@ -38,18 +38,37 @@ public sealed class TransactionEngine(
     IRegistry registry,
     IActivationBroadcaster broadcaster,
     QuiescePaths paths,
-    EngineInfo info)
+    EngineInfo info,
+    IActivationCapture? activationCapture = null)
 {
     private readonly StateStore _state = new(paths.DataRoot);
 
+    /// <summary>
+    /// Optional because most activations carry no state. When the broadcaster also implements
+    /// capture (the Win32 one does), use it automatically.
+    /// </summary>
+    private readonly IActivationCapture? _capture = activationCapture ?? broadcaster as IActivationCapture;
+
     // ---------------------------------------------------------------- Plan
 
-    public EngagePlan Plan(CatalogFile catalog, string profile)
+    /// <summary>
+    /// Projects the catalog into concrete steps against live state.
+    /// </summary>
+    /// <param name="enabledIds">
+    /// Entry ids switched on. Null means "every entry", which is only appropriate for tests —
+    /// production callers pass the active profile so that a catalog update can add available
+    /// tweaks without silently applying them.
+    /// </param>
+    public EngagePlan Plan(CatalogFile catalog, string profile, IReadOnlySet<string>? enabledIds = null)
     {
         var steps = new List<PlannedStep>();
         var stepId = 0;
 
-        foreach (var entry in catalog.Entries)
+        var entries = enabledIds is null
+            ? catalog.Entries
+            : catalog.Entries.Where(e => enabledIds.Contains(e.Id)).ToList();
+
+        foreach (var entry in entries)
         {
             foreach (var op in entry.Ops)
             {
@@ -99,6 +118,10 @@ public sealed class TransactionEngine(
         var sessionId = Guid.NewGuid();
         using var journal = JournalWriter.Open(paths.SessionDir(sessionId));
 
+        // Recovery net 4, written alongside the journal: a reg.exe script that undoes this session
+        // with no Quiesce binary involved. Grows step-by-step so it is valid even after a crash.
+        using var revertScript = RevertScriptWriter.Create(paths.SessionDir(sessionId), sessionId);
+
         journal.Append(new SessionStartRecord
         {
             SessionId = sessionId,
@@ -132,6 +155,7 @@ public sealed class TransactionEngine(
         var applied = 0;
         var skipped = plan.Steps.Count(s => s.NoOp);
         var rolledBackEntries = new List<string>();
+        var diagnoses = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var entryGroup in effective.GroupBy(s => s.EntryId))
         {
@@ -151,6 +175,14 @@ public sealed class TransactionEngine(
                     continue;
                 }
 
+                // Capture activation state BEFORE the write, alongside the registry prior: the
+                // broadcast that follows will overwrite it, and revert needs the original.
+                var activationPrior = step.Activation
+                    .Where(k => k != ActivationKind.None)
+                    .Select(k => _capture?.Capture(k))
+                    .OfType<ActivationState>()
+                    .ToList();
+
                 journal.Append(new ApplyingRecord
                 {
                     StepId = step.StepId,
@@ -160,27 +192,57 @@ public sealed class TransactionEngine(
                     Prior = prior,
                     IntendedNew = step.IntendedNew,
                     Activation = step.Activation,
+                    ActivationPrior = activationPrior,
                 });
 
-                registry.SetValue(step.Target, step.IntendedNew);
+                // Script the inverse before performing the mutation, for the same reason the
+                // journal is written first: the undo must exist on disk before the change does.
+                revertScript.AppendInverse(step.StepId, step.Target, prior);
+                foreach (var captured in activationPrior)
+                {
+                    revertScript.AppendNote(
+                        $"step {step.StepId} also needs {captured.Kind} replayed; reg.exe cannot do that. " +
+                        "Run 'quiesce revert-all' if you can, or re-apply the setting in Windows.");
+                }
+
+                // A refused write is an outcome, not a crash. Windows denies registry writes for
+                // reasons entirely outside the app's control - ACLs on policy subtrees (including
+                // some under HKCU), Tamper Protection, policy engines - and the correct response is
+                // to roll the entry back and report a typed diagnosis. Letting the exception escape
+                // would kill the process mid-apply, leaving the machine dirty and the user with a
+                // stack trace instead of an explanation.
+                string? writeFailure = null;
+                try
+                {
+                    registry.SetValue(step.Target, step.IntendedNew);
+                }
+                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException)
+                {
+                    writeFailure = ex is UnauthorizedAccessException
+                        ? "AccessDenied: Windows refused the write. This key is protected; the tweak may need " +
+                          "elevation, or may be locked by policy or Tamper Protection."
+                        : $"WriteFailed: {ex.Message}";
+                }
 
                 // Verify by re-reading the authoritative source. A non-throwing API call is not
                 // success: Tamper Protection and policy engines silently swallow writes.
-                var check = registry.Probe(step.Target);
-                var ok = check.Presence == RegPresence.ValuePresent
+                var check = writeFailure is null ? registry.Probe(step.Target) : null;
+                var ok = check is not null
+                    && check.Presence == RegPresence.ValuePresent
                     && check.Value is not null
                     && check.Value.DataEquals(step.IntendedNew);
 
                 journal.Append(new AppliedRecord
                 {
                     StepId = step.StepId,
-                    Verify = ok ? "ok" : $"mismatch: live={Describe(check)}",
+                    Verify = writeFailure ?? (ok ? "ok" : $"mismatch: live={Describe(check!)}"),
                 });
 
                 if (!ok)
                 {
-                    RollBackEntry(journal, entryGroup.Key, appliedInEntry, (step, prior));
+                    RollBackEntry(journal, entryGroup.Key, appliedInEntry, (step, prior), writeFailure ?? "verify failed");
                     rolledBackEntries.Add(entryGroup.Key);
+                    diagnoses[entryGroup.Key] = writeFailure ?? $"verify failed: live={Describe(check!)}";
                     entryFailed = true;
                     break;
                 }
@@ -200,6 +262,7 @@ public sealed class TransactionEngine(
             }
         }
 
+        revertScript.Finish();
         journal.Append(new CommittedRecord { AppliedSteps = applied, SkippedNoop = skipped });
 
         // The machine is now engaged: committed AND dirty is the steady state. isDirty clears only
@@ -215,6 +278,7 @@ public sealed class TransactionEngine(
             Applied = applied,
             SkippedNoop = skipped,
             RolledBackEntries = rolledBackEntries,
+            Diagnoses = diagnoses,
         };
     }
 
@@ -223,7 +287,8 @@ public sealed class TransactionEngine(
         JournalWriter journal,
         string entryId,
         List<(PlannedStep Step, RegistryProbe Prior)> appliedInEntry,
-        (PlannedStep Step, RegistryProbe Prior) failedStep)
+        (PlannedStep Step, RegistryProbe Prior) failedStep,
+        string reason)
     {
         var toUndo = appliedInEntry.Append(failedStep).Reverse().ToList();
         var undone = new List<int>();
@@ -237,7 +302,7 @@ public sealed class TransactionEngine(
         journal.Append(new EntryRolledBackRecord
         {
             EntryId = entryId,
-            Reason = "verify failed",
+            Reason = reason,
             RolledBackSteps = undone,
         });
     }
@@ -275,6 +340,7 @@ public sealed class TransactionEngine(
         var deferred = 0;
         var failed = 0;
         var broadcasts = new HashSet<ActivationKind>();
+        var stateReplays = new List<ActivationState>();
 
         // Registry steps unwind newest-first. (Dependency-ordered revert across op kinds —
         // services before registry before relaunch — arrives with those op kinds.)
@@ -319,7 +385,12 @@ public sealed class TransactionEngine(
                     RestorePrior(step.Target, step.Prior);
                     outcome = step.Prior.Presence == RegPresence.ValuePresent ? "restored" : "deleted";
 
-                    foreach (var kind in step.Activation.Where(k => k != ActivationKind.None))
+                    // An activation with captured state gets that state replayed; one without is a
+                    // pure notification and only needs re-broadcasting.
+                    var withState = step.ActivationPrior.Select(a => a.Kind).ToHashSet();
+                    stateReplays.AddRange(step.ActivationPrior);
+
+                    foreach (var kind in step.Activation.Where(k => k != ActivationKind.None && !withState.Contains(k)))
                     {
                         broadcasts.Add(kind);
                     }
@@ -335,7 +406,24 @@ public sealed class TransactionEngine(
             }
         }
 
-        // Broadcasts after all registry writes, mirroring apply order.
+        // Activations after all registry writes, mirroring apply order. State replays first: they
+        // are the ones that actually restore behaviour, and a later notification broadcast should
+        // observe the already-corrected state.
+        foreach (var state in stateReplays)
+        {
+            try
+            {
+                _capture?.Restore(state);
+            }
+            catch (InvalidOperationException ex)
+            {
+                // A failed replay leaves registry correct but session behaviour stale - report it
+                // rather than let the run claim a clean revert.
+                messages.Add($"activation {state.Kind}: replay failed: {ex.Message}");
+                failed++;
+            }
+        }
+
         foreach (var kind in broadcasts)
         {
             broadcaster.Broadcast(kind);

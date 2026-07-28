@@ -39,8 +39,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - **M2** — `run-app.ps1`, which stages the build output to `%TEMP%` before launching. An elevated Quiesce locks
   its own build output and cannot be closed from an unelevated shell; running from a copy avoids the deadlock.
 
+- **M3** — The registry catalog: 24 entries, 38 ops across privacy, debloat, shell and gaming, every target's
+  value kind read off this machine rather than assumed. Ships with an exclusions list of everything deliberately
+  refused.
+- **M3** — Per-entry toggles. Entries are **opt-in**: a catalog row does nothing until a profile enables it, so
+  shipping a new catalog can widen what is *available* but never what is *applied*. The default profile is the
+  five entries from the plan; everything else is visible and off.
+- **M3** — Activation state capture. `SPI_GETMOUSE` records the live acceleration curve before the write and
+  revert replays it, because re-broadcasting `SPI_SETMOUSE` would re-apply the *lean* curve while every
+  byte-level check reported a clean restore.
+- **M3** — `revert.cmd`: a literal reg.exe script written before each mutation, so a session can be undone with
+  no Quiesce binary at all. Verified end-to-end by running it as the only revert mechanism.
+- **M3** — System Restore integration that compares sequence numbers before and after, and reports
+  "no new point was created" plainly rather than trusting an API that returns success while doing nothing.
+- **M3** — Preflight dialog rendering the literal planned steps, and Engage/Restore wired in the GUI.
+- **M3** — `scripts/baseline-diff.ps1`: recursive snapshot of every catalog subtree plus the live mouse curve,
+  engage/restore/diff, repeated N times. Passing at 5 rounds over 16 entries and 1101 values.
+
 ### Fixed
 
+- **M3** — A denied registry write crashed the process mid-apply with an unhandled
+  `UnauthorizedAccessException`, leaving the machine dirty and the user holding a stack trace. Refused writes are
+  now a typed diagnosis that rolls the entry back, and the reason is surfaced verbatim in both the CLI and GUI.
+  Found by the baseline diff on its first round.
+- **M3** — `requiresAdmin` was derived from "does it target HKLM", which is wrong: the per-user policy subtree
+  `HKCU\...\CurrentVersion\Policies` is owned by Administrators and grants the interactive user read-only. The
+  loader now rejects any HKCU policy-subtree op that does not declare `requiresAdmin`.
+- **M3** — CLI contract tests shared one registry key across all seven tests, making them order-dependent and
+  intermittently flaky. Each test instance now gets its own key.
 - **M2** — `InvariantGlobalization=true` (set during M0 as a size optimization) crashed WPF at startup with a
   `CultureNotFoundException` from the font cache. Removed, with a comment so it does not come back.
 - **M2** — The selected navigation item rendered as a solid block of the *system* accent colour, which reads as
