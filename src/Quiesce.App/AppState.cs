@@ -63,6 +63,27 @@ public sealed record AppState
 
     public bool RebootPending => RebootPendingTitles.Count > 0;
 
+    /// <summary>
+    /// Whether the engaged session still matches the machine. Null when nothing is engaged.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Null and "engaged with no drift" are different facts and must not render the same: the first means
+    /// there is nothing to be out of sync with, the second means Quiesce looked and the machine matched.
+    /// A <see cref="DriftReport"/> with <c>Unknown = true</c> is a third — it looked and could not tell.
+    /// </para>
+    /// <para>
+    /// Computed on <see cref="Load"/> rather than on a timer. There is no background check in this app, on
+    /// purpose: a periodic drift check would enumerate every process and query the SCM on a schedule,
+    /// including while a game is fullscreen, which is the one time Quiesce should be doing nothing at all.
+    /// The Dashboard has a Re-check button and the report carries the time it was taken.
+    /// </para>
+    /// </remarks>
+    public DriftReport? Drift { get; init; }
+
+    /// <summary>True only when Quiesce looked and found the machine changed.</summary>
+    public bool Drifted => Drift is { Unknown: false, Any: true };
+
     public string? LoadError { get; init; }
 
     public static AppState Load()
@@ -149,6 +170,7 @@ public sealed record AppState
                 RebootPendingTitles = RebootTitles(state, catalog),
                 Plan = engine.Plan(catalog, "default", new ProfileStore(paths.DataRoot).ActiveEnabled()),
                 StatusPlan = engine.Plan(catalog, "default", enabledIds: null),
+                Drift = DetectDrift(engine, state),
             };
         }
         catch (Exception ex) when (ex is CatalogException or IOException or UnauthorizedAccessException)
@@ -160,6 +182,41 @@ public sealed record AppState
                 CatalogPath = catalogPath,
                 RebootPendingTitles = RebootTitles(state, catalog: null),
                 LoadError = ex.Message,
+            };
+        }
+    }
+
+    /// <summary>
+    /// The drift report for the engaged session, or null when nothing is engaged.
+    /// </summary>
+    /// <remarks>
+    /// Never allowed to take the window down. A drift check is a convenience on top of a machine that is
+    /// already correctly described by <see cref="MachineState"/>, so a failure to compute it degrades to
+    /// "not checked" rather than to a crash on startup — with one exception that matters:
+    /// <see cref="DriftReport.Unknown"/> already covers an unreadable journal and is returned rather than
+    /// thrown, so the only things caught here are genuinely unexpected.
+    /// </remarks>
+    private static DriftReport? DetectDrift(TransactionEngine engine, QuiesceState state)
+    {
+        if (!state.IsDirty || state.ActiveSessionId is not { } sessionId)
+        {
+            return null;
+        }
+
+        try
+        {
+            return engine.DetectDrift(sessionId);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return new DriftReport
+            {
+                SessionId = sessionId,
+                Items = [],
+                Unknown = true,
+                UnknownReason = $"Quiesce could not check whether this machine still matches the session: {ex.Message}",
+                AppliedBeforeLastRestart = false,
+                CheckedUtc = DateTimeOffset.UtcNow,
             };
         }
     }

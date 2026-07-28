@@ -1,6 +1,7 @@
 using System.Windows.Controls;
 using Quiesce.App;
 using Quiesce.App.Views;
+using Quiesce.Core.Engine;
 using Quiesce.Core.Journal;
 
 namespace Quiesce.Tests;
@@ -234,6 +235,134 @@ public class ViewConstructionTests
         Assert.Contains("NOT reopen", rows[0].NewText);
         Assert.Contains("put back on Restore", rows[1].NewText);
     }
+
+    [Fact]
+    public void A_drifted_machine_renders_as_its_own_state_not_as_engaged()
+    {
+        // The fourth state, and the reason the palette work came first: before it, "engaged and matching"
+        // and "engaged and no longer matching" would have rendered identically.
+        var drifted = EngagedState() with { Drift = DriftWith(resyncable: 1, reportedOnly: 0) };
+
+        Assert.Equal(DashboardPage.CardState.Drifted, DashboardPage.StateOf(drifted));
+        Assert.NotEqual(
+            DashboardPage.BrushKeyFor(DashboardPage.CardState.Engaged),
+            DashboardPage.BrushKeyFor(DashboardPage.CardState.Drifted));
+    }
+
+    [Fact]
+    public void An_engaged_machine_that_was_checked_and_matches_is_not_drifted()
+    {
+        // "Checked and matching" must not be the drifted state, and it must not be indistinguishable from
+        // "never checked" either - the card says Quiesce looked only when it did.
+        var matching = EngagedState() with { Drift = DriftWith(resyncable: 0, reportedOnly: 0) };
+
+        Assert.Equal(DashboardPage.CardState.Engaged, DashboardPage.StateOf(matching));
+        Assert.Null(MainWindow.DriftBannerText(matching));
+    }
+
+    [Fact]
+    public void An_unknown_drift_report_never_reads_as_in_sync()
+    {
+        // Third fact, third rendering. "Could not tell" is not "matches", for the same reason StateUnknown
+        // is not "clean" - and the data root is hardened to Administrators, so this is the DEFAULT outcome
+        // for anything that is not elevated.
+        var unknown = EngagedState() with
+        {
+            Drift = new DriftReport
+            {
+                SessionId = Guid.NewGuid(),
+                Items = [],
+                Unknown = true,
+                UnknownReason = "journal unreadable",
+                AppliedBeforeLastRestart = false,
+                CheckedUtc = DateTimeOffset.UtcNow,
+            },
+        };
+
+        var text = MainWindow.DriftBannerText(unknown);
+
+        Assert.NotNull(text);
+        Assert.Contains("cannot tell", text.Value.Headline);
+    }
+
+    [Fact]
+    public void The_drift_banner_shouts_save_your_work_when_something_will_be_closed()
+    {
+        // The banner is where the user decides whether to press Resync at all, so the warning belongs here
+        // as well as in the preflight - a close is the one thing Restore does not undo.
+        var text = MainWindow.DriftBannerText(
+            EngagedState() with { Drift = DriftWith(resyncable: 2, reportedOnly: 0) });
+
+        Assert.NotNull(text);
+        Assert.Equal("Out of sync with what Quiesce applied", text.Value.Headline);
+        Assert.Contains("SAVE YOUR WORK FIRST", text.Value.Detail);
+        Assert.Contains("2 things Quiesce can put back", text.Value.Detail);
+        Assert.Contains("checked ", text.Value.Detail);
+    }
+
+    [Fact]
+    public void A_banner_with_nothing_resyncable_does_not_imply_an_action()
+    {
+        // When Quiesce will not put anything back, the headline must not read as an offer. It also has to
+        // name the items, so "noticed and deliberately left alone" cannot be mistaken for "did not notice".
+        var text = MainWindow.DriftBannerText(
+            EngagedState() with { Drift = DriftWith(resyncable: 0, reportedOnly: 1) });
+
+        Assert.NotNull(text);
+        Assert.Equal("Changed since Engage, and Quiesce is leaving it alone", text.Value.Headline);
+        Assert.DoesNotContain("SAVE YOUR WORK", text.Value.Detail);
+        Assert.Contains("will NOT put back", text.Value.Detail);
+        Assert.Contains("because it says so", text.Value.Detail);
+    }
+
+    [Fact]
+    public void Both_halves_are_shown_when_both_exist()
+    {
+        // A session can have some drift Quiesce will fix and some it will not, and reporting only one half
+        // would be the list-that-quietly-shortens failure this codebase has already fixed twice.
+        var text = MainWindow.DriftBannerText(
+            EngagedState() with { Drift = DriftWith(resyncable: 1, reportedOnly: 2) });
+
+        Assert.NotNull(text);
+        Assert.Contains("1 thing Quiesce can put back", text.Value.Detail);
+        Assert.Contains("2 things changed that Quiesce will NOT put back", text.Value.Detail);
+    }
+
+    private static AppState EngagedState() => new()
+    {
+        MachineState = new QuiesceState { IsDirty = true, ActiveSessionId = Guid.NewGuid() },
+        DataRoot = @"C:\ProgramData\Quiesce",
+    };
+
+    private static DriftReport DriftWith(int resyncable, int reportedOnly) => new()
+    {
+        SessionId = Guid.NewGuid(),
+        Unknown = false,
+        AppliedBeforeLastRestart = false,
+        CheckedUtc = DateTimeOffset.UtcNow,
+        Items =
+        [
+            .. Enumerable.Range(0, resyncable).Select(i => new DriftItem
+            {
+                StepId = i,
+                EntryId = $"apps.fix{i}",
+                Target = $"close comet — comet (pid {i})",
+                Kind = DriftKind.ProcessReturned,
+                Detail = "comet.exe is running again",
+                Resyncable = true,
+            }),
+            .. Enumerable.Range(0, reportedOnly).Select(i => new DriftItem
+            {
+                StepId = 100 + i,
+                EntryId = $"shell.left{i}",
+                Target = $@"HKCU\Software\Test!Value{i}",
+                Kind = DriftKind.RegistryChanged,
+                Detail = "now 1, and Quiesce wrote 0.",
+                Resyncable = false,
+                NotResyncableReason = "Quiesce will not put this back because it says so.",
+            }),
+        ],
+    };
 
     [Fact]
     public void Every_card_state_resolves_to_its_own_brush()

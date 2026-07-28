@@ -191,6 +191,15 @@ internal static class Verbs
                     Console.WriteLine($"         {id}");
                 }
             }
+
+            // A third orthogonal fact, and it gets its own line for the same reason `reboot:` does. An
+            // engaged machine that no longer holds what it applied is not the same as an engaged machine
+            // that does, and "ENGAGED" alone cannot say which. Printed here so the CLI and the GUI answer
+            // this question from one implementation and cannot disagree about it.
+            if (state.IsDirty && state.ActiveSessionId is { } sessionId)
+            {
+                PrintDrift(env.CreateEngine().DetectDrift(sessionId));
+            }
         }
 
         Console.WriteLine($"data:    {env.Paths.DataRoot}");
@@ -593,6 +602,50 @@ internal static class Verbs
 
         Console.Error.WriteLine("quiesce: " + MutatingLock.BusyMessage);
         return CommandRouter.ExitCode.UsageError;
+    }
+
+    /// <summary>
+    /// Prints the drift verdict, or nothing at all when the machine matches its session.
+    /// </summary>
+    /// <remarks>
+    /// Silent on a matching machine so that `drift:` appearing at all means something. The UNKNOWN case is
+    /// never silent, because "Quiesce could not tell" must not read the same as "Quiesce checked".
+    /// </remarks>
+    private static void PrintDrift(DriftReport drift)
+    {
+        if (drift.Unknown)
+        {
+            Console.WriteLine($"drift:   UNKNOWN - {drift.UnknownReason}");
+            return;
+        }
+
+        if (!drift.Any)
+        {
+            return;
+        }
+
+        Console.WriteLine(
+            $"drift:   {drift.Items.Count} difference(s) between what this session applied and what the " +
+            "machine holds now.");
+
+        foreach (var item in drift.Resyncable)
+        {
+            Console.WriteLine($"         [resync] {item.Target}");
+            Console.WriteLine($"                  {item.Detail}");
+        }
+
+        foreach (var item in drift.ReportedOnly)
+        {
+            Console.WriteLine($"         [left alone] {item.Target}");
+            Console.WriteLine($"                  {item.Detail}");
+            Console.WriteLine($"                  {item.NotResyncableReason}");
+        }
+
+        if (drift.AppliedBeforeLastRestart)
+        {
+            Console.WriteLine(
+                "         This session was applied before the last restart, so nothing here is resyncable.");
+        }
     }
 
     private static int PrintRevert(RevertResult result)

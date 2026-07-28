@@ -83,6 +83,7 @@ public partial class DashboardPage
         ArgumentNullException.ThrowIfNull(state);
 
         return state.StateUnknown ? CardState.Unknown
+            : state.Drifted ? CardState.Drifted
             : state.MachineState.IsDirty ? CardState.Engaged
             : CardState.Clean;
     }
@@ -131,10 +132,21 @@ public partial class DashboardPage
                     "first session's changes as if they were your original settings.";
                 break;
 
+            case CardState.Drifted:
+                StateHeadline.Text = "Engaged, out of sync";
+                StateDetail.Text =
+                    $"Session {_state.MachineState.ActiveSessionId:D} is active, but the machine no longer " +
+                    "matches it — see the banner at the top for what changed. Restore still puts back " +
+                    "everything Quiesce is still holding.";
+                break;
+
             case CardState.Engaged:
                 StateHeadline.Text = "Engaged";
                 StateDetail.Text =
                     $"Session {_state.MachineState.ActiveSessionId:D} is active. " +
+                    (_state.Drift is { Unknown: false }
+                        ? "Quiesce checked, and the machine still matches it. "
+                        : string.Empty) +
                     "Restore puts everything back exactly as it was.";
                 break;
 
@@ -146,6 +158,12 @@ public partial class DashboardPage
 
         EngageButton.IsEnabled = CanEngage;
         RestoreButton.IsEnabled = CanRestore;
+
+        // Only while engaged. On a clean machine there is nothing to be out of sync with, and offering the
+        // button would invite the user to check a question that has no meaning yet.
+        RecheckButton.Visibility = _state.MachineState.IsDirty
+            ? Visibility.Visible
+            : Visibility.Collapsed;
 
         var applied = _state.Plan?.Steps.Count(s => s.NoOp) ?? 0;
         var pending = _state.Plan?.EffectiveSteps.Count() ?? 0;
@@ -288,6 +306,60 @@ public partial class DashboardPage
         }
     }
 
+    /// <summary>
+    /// Re-reads the machine and re-reports whether it still matches the session.
+    /// </summary>
+    /// <remarks>
+    /// Not a mutation, so it takes no lock and sets no <c>App.Mutating</c> — but it does go through
+    /// <c>Task.Run</c>, because a drift check enumerates every process and queries the SCM, and on a
+    /// machine with a lot of both that is long enough to freeze the window.
+    /// <para>
+    /// It reports the outcome even when nothing changed. A button that visibly does nothing is
+    /// indistinguishable from a button that is broken, and "checked, still matching" is a real answer.
+    /// </para>
+    /// </remarks>
+    private async void OnRecheck(object sender, RoutedEventArgs e)
+    {
+        SetBusy(true);
+        try
+        {
+            var reloaded = await Task.Run(AppState.Load);
+            _state = reloaded;
+            Render();
+            StateChanged?.Invoke(this, EventArgs.Empty);
+
+            var at = (_state.Drift?.CheckedUtc ?? DateTimeOffset.UtcNow).ToLocalTime()
+                .ToString("HH:mm:ss", System.Globalization.CultureInfo.CurrentCulture);
+
+            if (_state.Drift is null)
+            {
+                ShowResult(ResultTone.Neutral, "Nothing is engaged, so there is nothing to be out of sync with.");
+            }
+            else if (_state.Drift.Unknown)
+            {
+                ShowResult(ResultTone.Bad, _state.Drift.UnknownReason ?? "Quiesce could not tell.");
+            }
+            else if (!_state.Drift.Any)
+            {
+                ShowResult(ResultTone.Good, $"Checked at {at}. The machine still matches this session.");
+            }
+            else
+            {
+                ShowResult(ResultTone.Neutral,
+                    $"Checked at {at}. {_state.Drift.Items.Count} difference" +
+                    $"{(_state.Drift.Items.Count == 1 ? string.Empty : "s")} — see the banner at the top.");
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            ShowResult(ResultTone.Bad, ex.Message);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
     private async void OnRestore(object sender, RoutedEventArgs e)
     {
         SetBusy(true);
@@ -402,6 +474,10 @@ public partial class DashboardPage
         Busy.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         EngageButton.IsEnabled = !busy && CanEngage;
         RestoreButton.IsEnabled = !busy && CanRestore;
+
+        // Disabled while busy like the other two, but its enablement is not a third state expression - a
+        // re-check is always available while engaged, because it changes nothing.
+        RecheckButton.IsEnabled = !busy;
     }
 
     /// <summary>

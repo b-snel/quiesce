@@ -13,6 +13,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -45,7 +46,37 @@
             </Grid>
         </Border>
 
-        <Grid Grid.Row="2">
+        <!-- Out-of-sync warning, beside the reboot banner and for the identical reason: it is a fact about
+             the machine, not about whatever page is open. Its own row rather than sharing one, because both
+             can be true at once - a session can be waiting on a restart AND have had an application
+             reopened - and stacking them is honest where replacing one with the other is not.
+
+             Orange, which no other surface in the app uses. Not amber: that is the reboot banner's, and
+             two different facts must not share a colour. -->
+        <Border x:Name="DriftBanner"
+                Grid.Row="2"
+                Margin="12,0,12,8"
+                Padding="16,12"
+                CornerRadius="6"
+                Visibility="Collapsed"
+                Background="{DynamicResource StateDriftBrush}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="&#x2941;" FontSize="20" Margin="0,0,12,0"
+                           VerticalAlignment="Top" Opacity="0.85" />
+                <StackPanel Grid.Column="1">
+                    <TextBlock x:Name="DriftHeadline" FontWeight="SemiBold" FontSize="14"
+                               TextWrapping="Wrap" />
+                    <TextBlock x:Name="DriftDetail" Margin="0,4,0,0" Opacity="0.85"
+                               TextWrapping="Wrap" FontSize="12.5" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="3">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="220" />
                 <ColumnDefinition Width="*" />

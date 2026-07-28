@@ -26,6 +26,17 @@
                            Padding="28,10"
                            Margin="12,0,0,0"
                            Click="OnRestore" />
+                <!-- Explicit, because there is no background drift check and there is not going to be one:
+                     a periodic sweep would enumerate every process and query the SCM on a schedule,
+                     including while a game is fullscreen, which is the one time Quiesce should do nothing
+                     at all. Shown only while engaged - there is nothing to be out of sync with otherwise. -->
+                <ui:Button x:Name="RecheckButton" x:FieldModifier="public"
+                           Content="Re-check"
+                           FontSize="16"
+                           Padding="28,10"
+                           Margin="12,0,0,0"
+                           Visibility="Collapsed"
+                           Click="OnRecheck" />
                 <ui:ProgressRing x:Name="Busy" IsIndeterminate="True" Width="28" Height="28"
                                  Margin="16,0,0,0" Visibility="Collapsed" VerticalAlignment="Center" />
             </StackPanel>
