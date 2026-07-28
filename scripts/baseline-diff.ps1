@@ -33,7 +33,8 @@ param(
     [int] $Rounds = 5,
     [string] $Quiesce,
     [string[]] $Only = @(),
-    [string[]] $Skip = @()
+    [string[]] $Skip = @(),
+    [string] $FaultInject
 )
 
 $ErrorActionPreference = 'Stop'
@@ -147,12 +148,12 @@ error. Dropping to 'Continue' for the duration of the call is the only reliable 
 native exe here and still judge it by its exit code rather than by whether it printed anything.
 #>
 function Invoke-Quiesce {
-    param([Parameter(Mandatory)][string] $Verb)
+    param([Parameter(Mandatory)][string] $Verb, [string[]] $Arguments = @())
 
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        return & $Quiesce $Verb 2>&1 | ForEach-Object { "$_" }
+        return & $Quiesce $Verb @Arguments 2>&1 | ForEach-Object { "$_" }
     } finally {
         $ErrorActionPreference = $previous
     }
@@ -261,7 +262,9 @@ $failures = 0
 for ($round = 1; $round -le $Rounds; $round++) {
     Write-Host "--- round $round/$Rounds ---"
 
-    $engageOut = Invoke-Quiesce 'engage'
+    # -FaultInject exists to test this harness's own failure path: a run that dies halfway must keep
+    # its journal and revert.cmd, because that is the run that needs them.
+    $engageOut = Invoke-Quiesce 'engage' $(if ($FaultInject) { @("--fault-inject=$FaultInject") } else { @() })
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ENGAGE FAILED (exit $LASTEXITCODE)" -ForegroundColor Red
         $engageOut | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
@@ -322,7 +325,20 @@ for ($round = 1; $round -le $Rounds; $round++) {
 }
 
 Write-Host ""
-Remove-Item $scratchRoot -Recurse -Force -ErrorAction SilentlyContinue
+
+# The scratch root holds the journal and the generated revert.cmd for this run. Deleting it
+# unconditionally - as this script used to - destroys the only means of undoing a run that failed
+# halfway, which is exactly the run that needs undoing. Clean up only on success.
+if ($failures -eq 0) {
+    Remove-Item $scratchRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+else {
+    Write-Host "Journal and revert.cmd KEPT (a failed run may have left the machine dirty):" -ForegroundColor Yellow
+    Write-Host "  $scratchRoot" -ForegroundColor Yellow
+    Get-ChildItem $scratchRoot -Recurse -Filter revert.cmd -ErrorAction SilentlyContinue |
+        ForEach-Object { Write-Host "  undo with: `"$($_.FullName)`"" -ForegroundColor Yellow }
+    Write-Host "  or: `$env:QUIESCE_DATA_ROOT='$scratchRoot'; & `"$Quiesce`" revert-all" -ForegroundColor Yellow
+}
 
 if ($failures -eq 0) {
     Write-Host "PASS - $Rounds round(s), no drift across $($testable.Count) entr$(if ($testable.Count -eq 1) {'y'} else {'ies'})." -ForegroundColor Green
