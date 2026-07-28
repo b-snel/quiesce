@@ -138,6 +138,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   guardrails refuse a user-written entry exactly as they refuse a shipped one. New `quiesce list-apps` verb
   prints the same list.
 
+- **M6** — **`gaming.game-mode-on`: assert Windows Game Mode rather than assume it.** Catalog v0.6.0. The
+  first and only entry that turns a setting **on** rather than making the machine leaner, added on an
+  explicit product decision. It is a consistency guarantee, not a performance claim — `impact: None`, and
+  nothing in it asserts that Game Mode helps, because the evidence for that is genuinely mixed.
+  <br>**Absent means enabled**, which is the whole subtlety: Windows encodes "Game Mode on" as the value not
+  existing, so on a machine nobody has touched, applying this writes a value and changes no behaviour at all.
+  The entry earns its place on the machine where something *has* set it to 0. Restore therefore **deletes**
+  the value rather than writing 0 — writing 0 would leave Game Mode switched off on a machine that started
+  with it on, and report a clean restore while having made things worse. Both directions are tested through
+  the engine.
+  <br>Also note what it does *not* do: `AllowAutoGameMode` is deliberately not written, because its semantics
+  and its kind are both unverified. And `expectedKind: DWord` here is documentation-derived, not observed —
+  the value is absent in every loaded hive on the development machine, so `GetValueKind` could not confirm it
+  and the loader's kind check cannot protect this write. Same weakness as `gaming.gamedvr-policy-lock`,
+  isolated in its own single-op entry for the same reason, and a test fails if the caveat is ever removed
+  from the notes.
+  <br>Shipped **on** in the default profile — the second stated exception to "a row ships visible and off".
+  Existing installs keep their profile, so it only affects a fresh one or a Reset to defaults.
 - **M6** — **Startup: stop things running at sign-in, reversibly.** Closing an application that starts
   itself again at every sign-in is fighting the symptom — Comet came back after a reboot from a Startup-folder
   shortcut. The new Startup page lists every auto-start entry (per-user and all-users Run keys, the 32-bit

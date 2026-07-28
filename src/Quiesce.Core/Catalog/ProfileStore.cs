@@ -60,6 +60,7 @@ public sealed class ProfileStore(string dataRoot)
     /// </remarks>
     public static readonly IReadOnlyList<string> BuiltInDefault =
     [
+        "gaming.game-mode-on",
         "gaming.gamedvr-capture-off",
         "gaming.mouse-acceleration-off",
         "shell.disable-widgets-policy",
