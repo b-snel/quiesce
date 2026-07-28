@@ -73,9 +73,10 @@
                 after a crash or power loss. The undo is the product.
             </TextBlock>
 
-            <!-- Environment facts -->
-            <TextBlock FontSize="14" FontWeight="SemiBold" Text="This machine" Margin="0,0,0,8" />
-            <TextBlock x:Name="EnvironmentDetail" TextWrapping="Wrap" Opacity="0.7" FontFamily="Consolas" />
+            <!-- The environment block moved to Settings, which is what "cleaning up the ergonomics" meant
+                 here: the dashboard answers one question - what state is this machine in, and what can I do
+                 about it - and a Consolas dump of paths and versions underneath it was answering a different
+                 one. Nothing was lost; Settings shows more of it than this did. -->
 
         </StackPanel>
     </ScrollViewer>

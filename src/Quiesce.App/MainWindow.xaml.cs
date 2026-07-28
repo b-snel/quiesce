@@ -47,6 +47,10 @@ public partial class MainWindow
             },
             ["Services"] = _ => new ServicesPage(),
             ["What Quiesce won't do"] = _ => new WontDoPage(),
+
+            // Last, and after the refusals page rather than before it: Settings is where someone goes
+            // deliberately, not where they should land while looking for what the app does.
+            ["Settings"] = s => new SettingsPage(s),
         };
 
         foreach (var name in _factories.Keys)

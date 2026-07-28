@@ -179,39 +179,12 @@ public partial class DashboardPage
         // nothing for one to do - the banner already says what changed and that Quiesce is leaving it alone.
         ResyncButton.Visibility = CanResync ? Visibility.Visible : Visibility.Collapsed;
 
-        var applied = _state.Plan?.Steps.Count(s => s.NoOp) ?? 0;
-        var pending = _state.Plan?.EffectiveSteps.Count() ?? 0;
-
-        EnvironmentDetail.Text =
-            $"data root   {_state.DataRoot}\n" +
-            $"catalog     {_state.CatalogPath ?? "<none found>"}\n" +
-            $"tweaks      {TweakCounts(applied, pending)}\n" +
-            $"version     {AppState.AppVersion()}" +
-            (_state.LoadError is null ? string.Empty : $"\n\nproblem     {_state.LoadError}");
-    }
-
-    /// <summary>
-    /// The tweak counts, worded for whether the machine is engaged or not.
-    /// </summary>
-    /// <remarks>
-    /// It said "{n} available" in both cases. On an engaged machine those tweaks are not available —
-    /// they are the ones currently holding, and Engage is refused anyway, so "available" read as an
-    /// offer the app would not honour. "already lean" is also wrong while engaged for the same reason
-    /// in reverse: a value is lean BECAUSE Quiesce made it lean, which is a different fact from having
-    /// found it that way.
-    /// </remarks>
-    private string TweakCounts(int applied, int pending)
-    {
-        if (_state.Catalog is null)
+        // A load problem still surfaces HERE and not only on Settings. It is the reason a plan may be
+        // missing or short, which is a fact about what the buttons above will do.
+        if (_state.LoadError is { } problem)
         {
-            return "n/a";
+            ShowResult(ResultTone.Bad, problem);
         }
-
-        var total = _state.Catalog.Entries.Count;
-
-        return _state.MachineState.IsDirty
-            ? $"{total} in catalog, {pending} in force this session, {applied} were already lean"
-            : $"{total} in catalog, {applied} already lean, {pending} available";
     }
 
     private async void OnEngage(object sender, RoutedEventArgs e)

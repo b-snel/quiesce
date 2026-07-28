@@ -57,6 +57,7 @@ public class ViewConstructionTests
     {
         T? result = default;
         Exception? failure = null;
+        var completed = false;
 
         var thread = new Thread(() =>
         {
@@ -64,6 +65,7 @@ public class ViewConstructionTests
             {
                 EnsureApplication();
                 result = func();
+                completed = true;
             }
             catch (Exception ex)
             {
@@ -73,11 +75,21 @@ public class ViewConstructionTests
 
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        thread.Join(TimeSpan.FromSeconds(30));
+        var joined = thread.Join(TimeSpan.FromSeconds(30));
 
         if (failure is not null)
         {
             throw new InvalidOperationException($"Page construction threw: {failure}", failure);
+        }
+
+        // A Join TIMEOUT used to fall straight through to `return result!` with failure still null, so a hung
+        // construction surfaced as a NullReferenceException on whatever the caller did with the result -
+        // pointing at the assertion instead of at the hang. Named explicitly now.
+        if (!joined || !completed)
+        {
+            throw new TimeoutException(
+                "The STA thread did not finish within 30s. A page constructor is hanging or blocking on the " +
+                "dispatcher, which this harness never runs.");
         }
 
         return result!;
@@ -107,10 +119,96 @@ public class ViewConstructionTests
             new StartupPage(CleanState() with { DataRoot = temp.Path }),
             new ServicesPage(),
             new WontDoPage(),
+            // The fake logon task, so constructing this page cannot register a real scheduled task on
+            // whatever machine runs the suite.
+            new SettingsPage(CleanState() with { DataRoot = temp.Path }, new FakeLogonTask()),
         });
 
-        Assert.Equal(6, built.Length);
+        // The TYPE SET, not the count. Across this batch two pages merge and one arrives, so the count
+        // returns to a number it has already been - and a count-only assertion would pass while the nav
+        // silently lost a page.
+        Assert.Equal(
+            new[]
+            {
+                nameof(DashboardPage), nameof(FeaturesPage), nameof(RunningAppsPage), nameof(StartupPage),
+                nameof(ServicesPage), nameof(WontDoPage), nameof(SettingsPage),
+            }.OrderBy(n => n, StringComparer.Ordinal),
+            built.Select(p => p.GetType().Name).OrderBy(n => n, StringComparer.Ordinal));
+
         Assert.All(built, page => Assert.NotNull(page));
+    }
+
+    [Fact]
+    public void Settings_says_that_starting_at_sign_in_is_not_journalled()
+    {
+        // The one change Quiesce makes that its undo does not cover, besides a close. A Settings page that
+        // offered this as an ordinary toggle would be quietly breaking the product's central promise.
+        using var temp = new TempDataRoot();
+
+        var detail = OnStaThread(() =>
+            new SettingsPage(CleanState() with { DataRoot = temp.Path }, new FakeLogonTask())
+                .StartAtSignInDetail.Text);
+
+        Assert.Contains("DOES NOT JOURNAL", detail, StringComparison.Ordinal);
+        Assert.Contains("Restore does not remove it", detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Settings_shows_what_the_scheduler_says_not_what_it_recorded()
+    {
+        // The settings file is a record of intent; the SCHEDULER is the authority. If the user removes the
+        // task in Task Scheduler, this page must show it off and say the two disagreed - never trust the
+        // stored bool and silently re-create something they deleted.
+        using var temp = new TempDataRoot();
+        new Core.Journal.SettingsStore(temp.Path).Save(
+            new Core.Journal.QuiesceSettings { StartAtSignIn = true });
+
+        var (isChecked, note) = OnStaThread(() =>
+        {
+            var page = new SettingsPage(
+                CleanState() with { DataRoot = temp.Path },
+                new FakeLogonTask { Registered = false });
+
+            return (page.StartAtSignInToggle.IsChecked, page.NoteText.Text);
+        });
+
+        Assert.False(isChecked);
+        Assert.Contains("removed outside Quiesce", note, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Settings_states_why_the_refused_settings_are_refused()
+    {
+        // A missing setting reads as an oversight. Two of these are absent for load-bearing reasons - the
+        // drift cadence and the data root - so the page has to carry them.
+        var refusals = SettingsPage.Refusals(@"C:\ProgramData\Quiesce");
+
+        Assert.Contains(refusals, r => r.Title.Contains("drifted", StringComparison.Ordinal)
+                                       && r.Reason.Contains("fullscreen", StringComparison.Ordinal));
+        Assert.Contains(refusals, r => r.Reason.Contains("QUIESCE_DATA_ROOT", StringComparison.Ordinal));
+        Assert.All(refusals, r => Assert.False(string.IsNullOrWhiteSpace(r.Reason)));
+    }
+
+    /// <summary>A logon task that records what it was asked to do and touches no real scheduler.</summary>
+    private sealed class FakeLogonTask : Core.Platform.ILogonTaskRegistration
+    {
+        public bool Registered { get; set; }
+
+        public string TaskPath => @"\Quiesce\Start at sign-in";
+
+        public bool IsRegistered() => Registered;
+
+        public string Register(string executablePath)
+        {
+            Registered = true;
+            return "registered";
+        }
+
+        public string Unregister()
+        {
+            Registered = false;
+            return "removed";
+        }
     }
 
     /// <summary>
