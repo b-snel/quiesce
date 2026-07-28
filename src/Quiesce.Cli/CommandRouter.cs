@@ -81,6 +81,15 @@ public static class CommandRouter
             // Simulated crash: die abruptly, exactly like the real thing. `recover` cleans up.
             throw;
         }
+        catch (Core.Journal.StateUnreadableException ex)
+        {
+            // Its own arm, and NotElevated rather than UsageError, because this is the one failure that
+            // used to be reported as good news. `restore` said "No active session. Nothing to restore.",
+            // `recover` said "Machine is clean", and `inventory` said "clean" - all three over a machine
+            // that was engaged, because the state file was unreadable and File.Exists calls that false.
+            Console.Error.WriteLine($"quiesce: {ex.Message}");
+            return ExitCode.NotElevated;
+        }
         catch (InvalidOperationException ex)
         {
             Console.Error.WriteLine($"quiesce: {ex.Message}");

@@ -1212,6 +1212,14 @@
                                         "underDirectories":  [
                                                                  "\\Waterfox\\"
                                                              ]
+                                    },
+                                    {
+                                        "kind":  "process",
+                                        "action":  "close",
+                                        "imageName":  "comet",
+                                        "underDirectories":  [
+                                                                 "\\Perplexity\\Comet\\Application\\"
+                                                             ]
                                     }
                                 ],
                         "activation":  [

@@ -26,12 +26,40 @@ public sealed record AppState
 
     public EngagePlan? Plan { get; init; }
 
+    /// <summary>
+    /// True when whether the machine is modified could not be determined.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <c>MachineState.IsDirty == false</c> on purpose. "Not dirty" and "no idea" must never
+    /// render the same, and Engage must be refused in the second case: engaging over an already-engaged
+    /// machine captures the first session's tweaks as if they were the user's original settings.
+    /// </remarks>
+    public bool StateUnknown { get; init; }
+
     public string? LoadError { get; init; }
 
     public static AppState Load()
     {
         var paths = new QuiescePaths();
-        var state = new StateStore(paths.DataRoot).Load();
+
+        // The GUI is requireAdministrator, so this read succeeds in practice. Handled anyway rather than
+        // left to crash the window on startup: if it ever cannot be read, the app must say so instead of
+        // rendering a confident "clean" over an engaged machine.
+        QuiesceState state;
+        try
+        {
+            state = new StateStore(paths.DataRoot).Load();
+        }
+        catch (StateUnreadableException ex)
+        {
+            return new AppState
+            {
+                MachineState = new QuiesceState(),
+                DataRoot = paths.DataRoot,
+                StateUnknown = true,
+                LoadError = ex.Message,
+            };
+        }
 
         var imagePath = Environment.ProcessPath ?? AppContext.BaseDirectory;
         var catalogPath = CatalogLocator.TryLocate(imagePath);

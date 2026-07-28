@@ -26,7 +26,18 @@ public partial class DashboardPage
 
     private void Render()
     {
-        if (_state.MachineState.IsDirty)
+        if (_state.StateUnknown)
+        {
+            // Never rendered as clean. "Not dirty" and "cannot tell" are different facts, and showing the
+            // reassuring one for both is exactly how a tool ends up lying about the only thing it is for.
+            StateBanner.Background = EngagedBrush;
+            StateHeadline.Text = "Unknown";
+            StateDetail.Text =
+                "Quiesce cannot read its own state file, so it does not know whether this machine is " +
+                "modified. Engage is disabled: engaging over an already-engaged machine would capture the " +
+                "first session's changes as if they were your original settings.";
+        }
+        else if (_state.MachineState.IsDirty)
         {
             StateBanner.Background = EngagedBrush;
             StateHeadline.Text = "Engaged";
@@ -42,9 +53,13 @@ public partial class DashboardPage
         }
 
         // Engage is refused while dirty by the engine anyway - disabling it here explains why
-        // rather than letting the user click into an error.
-        EngageButton.IsEnabled = !_state.MachineState.IsDirty && _state.Catalog is not null;
-        RestoreButton.IsEnabled = _state.MachineState.IsDirty;
+        // rather than letting the user click into an error. Also refused when the state is unknown,
+        // which is the case that has no engine-side check because the engine never gets a chance to run.
+        EngageButton.IsEnabled = !_state.MachineState.IsDirty && !_state.StateUnknown && _state.Catalog is not null;
+
+        // Restore stays available when the state is unknown: it is the one action whose worst case is
+        // discovering there was nothing to undo, and refusing to undo is never the safer error.
+        RestoreButton.IsEnabled = _state.MachineState.IsDirty || _state.StateUnknown;
 
         var applied = _state.Plan?.Steps.Count(s => s.NoOp) ?? 0;
         var pending = _state.Plan?.EffectiveSteps.Count() ?? 0;

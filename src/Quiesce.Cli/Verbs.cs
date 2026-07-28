@@ -21,8 +21,28 @@ internal static class Verbs
 
     public static int Inventory(CliEnvironment env)
     {
-        var state = new StateStore(env.Paths.DataRoot).Load();
-        Console.WriteLine($"machine: {(state.IsDirty ? $"ENGAGED (session {state.ActiveSessionId:D})" : "clean")}");
+        // Reported as UNKNOWN, never as clean. The data root is Administrators-only by design, so an
+        // unelevated inventory genuinely cannot answer this - and the answer it used to give was "clean",
+        // on a machine that was engaged at the time. Everything below still works unelevated, so the rest
+        // of the report is printed rather than abandoned.
+        var unknownState = false;
+        QuiesceState? state = null;
+        try
+        {
+            state = new StateStore(env.Paths.DataRoot).Load();
+        }
+        catch (StateUnreadableException ex)
+        {
+            unknownState = true;
+            Console.WriteLine("machine: UNKNOWN - Quiesce cannot tell whether this machine is modified.");
+            Console.WriteLine($"         {ex.Message}");
+        }
+
+        if (state is not null)
+        {
+            Console.WriteLine($"machine: {(state.IsDirty ? $"ENGAGED (session {state.ActiveSessionId:D})" : "clean")}");
+        }
+
         Console.WriteLine($"data:    {env.Paths.DataRoot}");
 
         // Surfaced because it changes which guardrails are active, and because a support bundle
@@ -35,7 +55,7 @@ internal static class Verbs
         {
             // Still useful without a catalog: dirty state is what you need in a recovery situation.
             Console.WriteLine("catalog: <none found> — tweak status unavailable, but restore/revert-all still work.");
-            return CommandRouter.ExitCode.Ok;
+            return unknownState ? CommandRouter.ExitCode.NotElevated : CommandRouter.ExitCode.Ok;
         }
 
         var catalog = env.LoadCatalog();
@@ -56,7 +76,9 @@ internal static class Verbs
             Console.WriteLine($"                    breaks: {entry.WhatItBreaks}");
         }
 
-        return CommandRouter.ExitCode.Ok;
+        // Non-zero when the machine's state could not be read, so a script cannot mistake an
+        // "I don't know" report for a clean bill of health.
+        return unknownState ? CommandRouter.ExitCode.NotElevated : CommandRouter.ExitCode.Ok;
     }
 
     public static int PrintPlan(CliEnvironment env)

@@ -172,6 +172,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- **M5** — **Quiesce reported `machine: clean` about a machine that was engaged.** The data root is
+  hardened to Administrators by design — an elevated Quiesce later executes the revert plan it finds
+  there — and `File.Exists` returns `false` when the real answer is "you are not permitted to look",
+  because it swallows every exception. So an unelevated read of the state file fell through to a default
+  state and reported not-dirty. Found on real hardware: with GameDVR and mouse acceleration genuinely
+  turned off in the registry at that moment, `inventory` said clean, `restore` said "No active session.
+  Nothing to restore.", and `recover` said "Machine is clean". Three reassurances, all false, from one
+  swallowed access denial on the only question this tool exists to answer. Every one of these paths now
+  opens the file and lets the exception distinguish absent from denied, and reports **UNKNOWN** with a
+  non-zero exit code rather than guessing. The same probe is fixed in four more places: the profile store
+  (an unelevated `print-plan` silently computed the plan from the shipped defaults while presenting it as
+  yours), `revert-all`'s per-session skip (which would have skipped a session holding outstanding changes
+  and then reported "machine clean" — the panic button claiming success for work it never looked at),
+  the journal-missing check, and the ACL preflight (which passed paths whose ACL it could not read, i.e.
+  the one check whose whole job is refusing failed open).
+- **M5** — **Perplexity's Comet browser was not in the browser group**, so it sailed straight through an
+  Engage with 20 live processes while the plan printed nine confident "nothing matching X is running"
+  lines. A list of browsers written from memory is a list of the browsers its author thought of; the
+  plan cannot report on what it was never told to look for.
 - **M5** — **A PID-based self-protection guard protected 2 of the host application's 14 processes.** A
   Chromium-style application puts its renderers and helpers *beside* the process that spawned the child,
   not above it, so the other 12 classified as ordinary and would have been throttled. Breaking 12 of 14

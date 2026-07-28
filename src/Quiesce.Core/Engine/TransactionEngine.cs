@@ -1201,12 +1201,23 @@ public sealed class TransactionEngine(
         var sessionDir = paths.SessionDir(sessionId);
         var journalPath = Path.Combine(sessionDir, "journal.jsonl");
 
-        if (!File.Exists(journalPath))
+        // Same trap, same fix: File.Exists cannot tell "no such journal" from "not permitted to look", and
+        // announcing "No journal for session X" about a journal that is sitting right there - holding the
+        // only record of how to undo the machine - sends the user looking for the wrong problem.
+        JournalReadResult read;
+        try
         {
-            throw new FileNotFoundException($"No journal for session {sessionId:D}.", journalPath);
+            read = JournalReader.Read(journalPath);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            throw new FileNotFoundException($"No journal for session {sessionId:D}.", journalPath, ex);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            throw new StateUnreadableException(journalPath, ex);
         }
 
-        var read = JournalReader.Read(journalPath);
         var messages = new List<string>();
 
         if (read.TornFinalLine)
@@ -1381,12 +1392,27 @@ public sealed class TransactionEngine(
         foreach (var sessionId in SessionsNewestFirst())
         {
             var journalPath = Path.Combine(paths.SessionDir(sessionId), "journal.jsonl");
-            if (!File.Exists(journalPath))
+
+            // The third instance of the same trap, and the worst place for it: a File.Exists probe returns
+            // false for "not permitted to read", so this `continue` would silently SKIP a session holding
+            // outstanding changes and the run would then report "reverted 0 - machine clean". The panic
+            // button reporting success for work it never looked at is the single worst failure available
+            // to this program.
+            JournalReadResult read;
+            try
             {
+                read = JournalReader.Read(journalPath);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                // A session directory with no journal in it. Nothing was ever recorded, so nothing is owed.
                 continue;
             }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException)
+            {
+                throw new StateUnreadableException(journalPath, ex);
+            }
 
-            var read = JournalReader.Read(journalPath);
             if (PendingSteps(read.Records).Count == 0)
             {
                 continue;
@@ -1598,12 +1624,26 @@ public sealed class TransactionEngine(
 
     private IEnumerable<Guid> SessionsNewestFirst()
     {
-        if (!Directory.Exists(paths.JournalRoot))
+        // Enumerated rather than probed with Directory.Exists, for the reason StateStore.Load documents at
+        // length: Exists returns false when the answer is "you are not allowed to look", and the journal
+        // root is hardened to Administrators. That turned an unelevated `revert-all` into the cheerful
+        // "No sessions with unreverted steps found" over a machine with outstanding changes on it.
+        List<string> directories;
+        try
         {
+            directories = Directory.EnumerateDirectories(paths.JournalRoot).ToList();
+        }
+        catch (DirectoryNotFoundException)
+        {
+            // Nothing has ever been journalled here. The only benign reading.
             return [];
         }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            throw new StateUnreadableException(paths.JournalRoot, ex);
+        }
 
-        return Directory.EnumerateDirectories(paths.JournalRoot)
+        return directories
             .Select(d => Guid.TryParse(Path.GetFileName(d), out var g) ? g : Guid.Empty)
             .Where(g => g != Guid.Empty)
             .OrderByDescending(g => Directory.GetCreationTimeUtc(paths.SessionDir(g)));

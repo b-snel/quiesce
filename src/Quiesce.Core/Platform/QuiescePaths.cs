@@ -105,9 +105,23 @@ public sealed class QuiescePaths
                 continue;
             }
 
-            FileSystemSecurity security = Directory.Exists(path)
-                ? new DirectoryInfo(path).GetAccessControl()
-                : new FileInfo(path).GetAccessControl();
+            // A path whose ACL cannot be read is reported as a finding, not skipped. Same reasoning as
+            // StateStore.Load: Exists-style probes and GetAccessControl both turn "not permitted to look"
+            // into silence, and silence here means this preflight - whose entire job is to refuse when an
+            // elevated Quiesce would trust an attacker-writable path - passes a path it never inspected.
+            // Unelevated that is merely noisy; elevated it would be the check failing open.
+            FileSystemSecurity security;
+            try
+            {
+                security = Directory.Exists(path)
+                    ? new DirectoryInfo(path).GetAccessControl()
+                    : new FileInfo(path).GetAccessControl();
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or PrivilegeNotHeldException or System.Security.SecurityException or IOException)
+            {
+                findings.Add($"{path}: ACL could not be read ({ex.Message}), so it could not be checked.");
+                continue;
+            }
 
             foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier)))
             {

@@ -70,9 +70,25 @@ public sealed class ProfileStore(string dataRoot)
 
     private string Path => System.IO.Path.Combine(dataRoot, "profiles.json");
 
+    /// <summary>
+    /// Reads the profile file, falling back to <see cref="BuiltInDefault"/> only when there genuinely
+    /// isn't one.
+    /// </summary>
+    /// <remarks>
+    /// Opened rather than probed with <c>File.Exists</c>, which returns <c>false</c> for "not permitted to
+    /// look" — and this file lives in the Administrators-only data root. The fall-through was milder than
+    /// the one in <see cref="Journal.StateStore"/> but the same lie in the same place: an unelevated
+    /// <c>print-plan</c> would silently compute the plan from the shipped defaults while telling the user
+    /// it was showing them theirs.
+    /// </remarks>
     public ProfileFile Load()
     {
-        if (!File.Exists(Path))
+        string json;
+        try
+        {
+            json = File.ReadAllText(Path);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
             return new ProfileFile
             {
@@ -83,8 +99,12 @@ public sealed class ProfileStore(string dataRoot)
                 },
             };
         }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            throw new Journal.StateUnreadableException(Path, ex);
+        }
 
-        var file = JsonSerializer.Deserialize<ProfileFile>(File.ReadAllText(Path), Options)
+        var file = JsonSerializer.Deserialize<ProfileFile>(json, Options)
             ?? throw new CatalogException($"{Path}: deserialized to null.");
 
         if (file.SchemaVersion > 1)

@@ -458,6 +458,11 @@ public static class Guardrails
         {
             "chrome", "msedge", "firefox", "brave", "opera", "opera_gx", "vivaldi", "chromium",
             "librewolf", "waterfox",
+
+            // Perplexity's Comet. Added after it was found running with 20 processes on the development
+            // machine and sailing straight through an Engage, because a list of browsers written from
+            // memory is a list of the browsers its author happened to think of.
+            "comet",
         };
 
     /// <summary>True when <paramref name="imageName"/> names a browser, with or without <c>.exe</c>.</summary>
