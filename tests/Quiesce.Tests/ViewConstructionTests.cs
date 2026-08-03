@@ -16,83 +16,18 @@ namespace Quiesce.Tests;
 /// catch the failures that actually happen: malformed XAML, missing DataTemplate types, and the
 /// ServicesPage guardrail cross-check.
 /// </remarks>
+[Collection(WpfTestHost.Collection)]
 public class ViewConstructionTests
 {
-    /// <summary>
-    /// WPF requires STA. Also creates the Application instance the pages resolve brushes from -
-    /// without it, TryFindResource returns null and the evidence badges silently fall back to gray.
-    /// </summary>
-    /// <summary>
-    /// WPF allows exactly one <see cref="System.Windows.Application"/> per AppDomain, so it is
-    /// created once for the whole test run rather than per test.
-    /// </summary>
-    private static readonly Lock AppLock = new();
-
-    private static bool _appInitialized;
-
-    private static void EnsureApplication()
-    {
-        lock (AppLock)
-        {
-            if (_appInitialized)
-            {
-                return;
-            }
-
-            _appInitialized = true;
-
-            // A bare Application, not Quiesce.App.App: the real one runs the single-instance guard
-            // in OnStartup, and merging App.xaml as a dictionary would CONSTRUCT an Application
-            // (its root element is <Application x:Class="...">), which WPF permits only once per
-            // AppDomain. Brushes.xaml is a plain dictionary precisely so it can be merged here.
-            var app = System.Windows.Application.Current ?? new System.Windows.Application();
-            app.Resources.MergedDictionaries.Add(new System.Windows.ResourceDictionary
-            {
-                Source = new Uri("pack://application:,,,/Quiesce;component/Theme/Brushes.xaml", UriKind.Absolute),
-            });
-        }
-    }
-
+    /// <remarks>
+    /// Delegates to <see cref="WpfTestHost"/>, which is the only thing in the test project allowed to create
+    /// the per-AppDomain <see cref="System.Windows.Application"/>. This used to be a private copy here, and a
+    /// second copy appearing in another test class raced it and broke four tests in this file — see the
+    /// remarks on <see cref="WpfTestHost"/> for the full mechanism.
+    /// </remarks>
     private static T OnStaThread<T>(Func<T> func)
     {
-        T? result = default;
-        Exception? failure = null;
-        var completed = false;
-
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                EnsureApplication();
-                result = func();
-                completed = true;
-            }
-            catch (Exception ex)
-            {
-                failure = ex;
-            }
-        });
-
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        var joined = thread.Join(TimeSpan.FromSeconds(30));
-
-        if (failure is not null)
-        {
-            throw new InvalidOperationException($"Page construction threw: {failure}", failure);
-        }
-
-        // A Join TIMEOUT used to fall straight through to `return result!` with failure still null, so a hung
-        // construction surfaced as a NullReferenceException on whatever the caller did with the result -
-        // pointing at the assertion instead of at the hang. Named explicitly now.
-        if (!joined || !completed)
-        {
-            throw new TimeoutException(
-                "The STA thread did not finish within 30s. A page constructor is hanging or blocking on the " +
-                "dispatcher, which this harness never runs.");
-        }
-
-        return result!;
+        return WpfTestHost.OnStaThread(func);
     }
 
     private static AppState CleanState() => new()
