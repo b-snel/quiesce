@@ -85,9 +85,81 @@ public sealed class LogonTaskRegistration : ILogonTaskRegistration
         }
     }
 
+    /// <summary>
+    /// Why this executable must not be written into a sign-in task, or null when it is fine.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Static and public so the refusal is one expression, testable without a scheduler, and reusable by any
+    /// caller that would rather grey a switch out than let it throw.
+    /// </para>
+    /// <para>
+    /// THIS EXISTS BECAUSE IT HAPPENED. The Settings page passes <c>Environment.ProcessPath</c>, which is
+    /// exactly right for an installed build and exactly wrong for a development one: the launcher stages each
+    /// build into <c>%TEMP%\quiesce-run\&lt;timestamp&gt;\</c> and prunes the previous stage on the next run, so
+    /// the task was registered against a directory that a later build deleted. It then failed at sign-in with
+    /// task result 0x80070002 or, once the app crashed for an unrelated reason, 0xE0434352 — neither of which
+    /// says "the path is gone". A task that cannot possibly work is worse than a switch that says why.
+    /// </para>
+    /// <para>
+    /// The temp check is a real prefix test rather than a substring one, and both ends are normalised, for the
+    /// same reason <c>ProcessOpSpec.UnderDirectories</c> does it: a folder merely NAMED like the temp path is
+    /// not inside it.
+    /// </para>
+    /// </remarks>
+    public static string? UnsuitableExecutableReason(string executablePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
+
+        string full;
+        try
+        {
+            full = Path.GetFullPath(executablePath);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return $"\"{executablePath}\" is not a usable path ({ex.Message}), so it cannot be registered.";
+        }
+
+        if (IsUnder(full, Path.GetTempPath()))
+        {
+            return "Quiesce is running from a temporary staging directory — " +
+                   $"\"{full}\". A sign-in task pointing there would break as soon as that directory is " +
+                   "cleaned up, which the dev launcher does on its very next run, and it would fail at " +
+                   "sign-in with a scheduler error code rather than anything explanatory. Start at sign-in " +
+                   "needs Quiesce installed somewhere permanent. Nothing has been registered.";
+        }
+
+        // Deliberately last, and phrased as "could not be found" rather than "does not exist": File.Exists
+        // reports false for "not permitted to look" too, which is the trap five other places in this
+        // codebase document. Either way it is not a path worth writing into a sign-in task.
+        if (!File.Exists(full))
+        {
+            return $"\"{full}\" could not be found, so a sign-in task pointing at it would fail every time. " +
+                   "Nothing has been registered.";
+        }
+
+        return null;
+    }
+
+    private static bool IsUnder(string candidate, string directory)
+    {
+        var root = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        return candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
+
     public string Register(string executablePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
+
+        // Refused rather than registered-and-broken. InvalidOperationException specifically, because the
+        // Settings page already catches that, puts the switch back where it was, and shows the message —
+        // a switch left on over a task that cannot run is the page claiming something untrue.
+        if (UnsuitableExecutableReason(executablePath) is { } reason)
+        {
+            throw new InvalidOperationException(reason);
+        }
 
         using var service = new Microsoft.Win32.TaskScheduler.TaskService();
         var definition = service.NewTask();
