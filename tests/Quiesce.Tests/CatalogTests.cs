@@ -415,6 +415,35 @@ public class CatalogTests
         Assert.All(ProfileStore.BuiltInDefault, id => Assert.Contains(id, ids));
     }
 
+    [Fact]
+    public void The_default_profile_enables_nothing_that_says_it_does_not_affect_a_game()
+    {
+        // Pinned because it was wrong once and the wrongness was invisible. The debloat and privacy rows
+        // shipped ENABLED, and each of them says in its own whatItBreaks that it has no effect on frame
+        // rate. Being in the default profile meant Engage applied them and Restore reverted them - so
+        // ending a gaming session turned the lock screen's suggestion surfaces back on, because 1 is
+        // genuinely what they were beforehand. Restore was correct; the profile was not.
+        //
+        // The assertion is over CATEGORY rather than a list of ids on purpose: a list would pass forever
+        // while a newly added bloat.* row quietly joined the default. Category is the thing that actually
+        // means "this is not why you engage".
+        var catalog = CatalogLoader.LoadFile(FindShippedCatalog());
+        var byId = catalog.Entries.ToDictionary(e => e.Id, StringComparer.OrdinalIgnoreCase);
+
+        var offenders = ProfileStore.BuiltInDefault
+            .Where(id => byId.TryGetValue(id, out var entry)
+                         && (entry.Category.Equals("debloat", StringComparison.OrdinalIgnoreCase)
+                             || entry.Category.Equals("privacy", StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        Assert.True(
+            offenders.Count == 0,
+            "The default profile enables " + string.Join(", ", offenders) + ". Debloat and privacy " +
+            "entries are worth applying once, on purpose - not on every Engage, because Restore then " +
+            "undoes them and putting the advertising back is not what finishing a game should mean. " +
+            "They stay in the catalog, visible and off.");
+    }
+
     private static string FindShippedCatalog()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)

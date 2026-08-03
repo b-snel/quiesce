@@ -32,10 +32,10 @@ public sealed record ProfileFile
 /// it is explicitly enabled, so upgrading the catalog can widen what is <em>available</em> but
 /// never what is <em>applied</em>.
 /// <para>
-/// The built-in default matches the approved plan: GameDVR capture off, mouse acceleration off,
-/// Widgets off, consumer features off, the ContentDeliveryManager set, and browsers closed. Everything
-/// else — every A/B experiment, every no-evidence row, every cosmetic shell tweak, every service, and
-/// the other two app groups — ships visible and off.
+/// The built-in default is things that plausibly affect a game: GameDVR capture off, mouse
+/// acceleration off, Game Mode asserted, Widgets off, and browsers closed. Everything else — every
+/// A/B experiment, every no-evidence row, every cosmetic shell tweak, every service, the debloat and
+/// privacy rows, and the other two app groups — ships visible and off.
 /// </para>
 /// </remarks>
 public sealed class ProfileStore(string dataRoot)
@@ -57,6 +57,22 @@ public sealed class ProfileStore(string dataRoot)
     /// them before the user approves anything. The two other app groups — throttling Discord, closing the
     /// Claude desktop app — are off, so the standing rule holds everywhere it can: a group ships visible
     /// and off unless there is a stated decision to the contrary.
+    /// <para>
+    /// THE DEBLOAT AND PRIVACY ROWS ARE NOT HERE, and that is a correction rather than an omission.
+    /// <c>bloat.consumer-features-off</c> and <c>bloat.contentdelivery-off</c> shipped enabled, and every
+    /// row in both of them says in its own <c>whatItBreaks</c> that it has no effect on frame rate. What
+    /// they do have is a round trip: Engage turned the lock screen's suggestion surfaces off and Restore
+    /// faithfully turned them back on, because on this machine 1 is genuinely what they were before. So
+    /// finishing a gaming session put the advertising back, and the user reasonably read that as Quiesce
+    /// switching things on. Nothing was broken — Restore means restore — but a profile called "the things
+    /// that help a game" had no business holding settings whose own text says they help no game.
+    /// </para>
+    /// <para>
+    /// They stay in the catalog, visible and off, because they are still worth applying — just once and
+    /// on purpose, not on every Engage. Enabling one is now a decision that comes with the knowledge that
+    /// Restore undoes it. <c>shell.disable-widgets-policy</c> is kept on a different argument: roughly
+    /// 87 MB and two resident processes is a resource claim, not a clutter one.
+    /// </para>
     /// </remarks>
     public static readonly IReadOnlyList<string> BuiltInDefault =
     [
@@ -64,8 +80,6 @@ public sealed class ProfileStore(string dataRoot)
         "gaming.gamedvr-capture-off",
         "gaming.mouse-acceleration-off",
         "shell.disable-widgets-policy",
-        "bloat.consumer-features-off",
-        "bloat.contentdelivery-off",
         "apps.close-browsers",
     ];
 
