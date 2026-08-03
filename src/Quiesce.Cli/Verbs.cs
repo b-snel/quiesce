@@ -218,17 +218,35 @@ internal static class Verbs
         }
 
         var catalog = env.LoadCatalog();
-        var plan = env.CreateEngine().Plan(catalog, "default", new ProfileStore(env.Paths.DataRoot).ActiveEnabled());
+        var enabled = new ProfileStore(env.Paths.DataRoot).ActiveEnabled();
+        var plan = env.CreateEngine().Plan(catalog, "default", enabled);
 
         Console.WriteLine($"catalog: {env.CatalogPath} (v{catalog.CatalogVersion}, {catalog.Entries.Count} entries)");
+        Console.WriteLine();
+
+        // These labels describe THE MACHINE AS IT IS NOW, and not one of them says who made it that
+        // way. Said out loud because the words used to imply otherwise: "already lean" and "not
+        // applied" read as claims about authorship, and they are computed from a fresh Plan() against
+        // the live registry, so on an engaged machine every value Quiesce itself wrote reported as
+        // "already lean" - the same words a value nobody ever touched got. Authorship lives in the
+        // journal, and the only place this report speaks for it is the drift block above.
+        Console.WriteLine("below: what the machine holds now. Which of it Quiesce did is a journal");
+        Console.WriteLine("       question - see the drift lines above, or run `quiesce resync`.");
         Console.WriteLine();
 
         foreach (var entry in catalog.Entries)
         {
             var steps = plan.Steps.Where(s => s.EntryId == entry.Id).ToList();
-            var status = steps.All(s => s.NoOp) ? "already lean"
-                : steps.Any(s => s.NoOp) ? "partially applied"
-                : "not applied";
+
+            // The enabled check comes FIRST, and it is the bug this ordering fixes. An entry that is
+            // switched off contributes no steps at all, and All() over an empty sequence is vacuously
+            // true - so every off entry used to print "already lean", which is the one reading that
+            // makes a user stop looking for the reason a tweak had no effect.
+            var status = !enabled.Contains(entry.Id) ? "not switched on"
+                : steps.Count == 0 ? "nothing to do here"
+                : steps.All(s => s.NoOp) ? "lean now"
+                : steps.Any(s => s.NoOp) ? "part lean now"
+                : "NOT lean now";
 
             Console.WriteLine($"[{status,-17}] {entry.Id}  ({entry.Evidence}, {entry.Impact} impact, tier {entry.RiskTier})");
             Console.WriteLine($"                    {entry.Title}");
